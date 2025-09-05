@@ -114,7 +114,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
-        guard row >= 0, entries.indices.contains(row) else { return }
+        guard row >= 0, row < entries.count else { return }
         delegate?.sidebarDidSelectDirectory(entries[row].url)
     }
     // For initial selection programmatically if needed
@@ -170,6 +170,8 @@ final class SeekerRootViewController: NSSplitViewController, SidebarSelectionDel
 
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+import QuickLookThumbnailing
 
 // Custom table view that swallows default double-click "open" behavior
 final class DirectoryTableView: NSTableView {
@@ -207,6 +209,16 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private let searchField = NSSearchField()
     private let scroll = NSScrollView()
     private let table = DirectoryTableView()
+
+    // Preview (right) pane
+    private let preview = NSView()
+    private let previewImage = NSImageView()
+    private let previewTitle = NSTextField(labelWithString: "")
+    private let previewSubtitle = NSTextField(labelWithString: "")
+    private let previewPrimary = NSButton(title: "Open", target: nil, action: nil)
+
+    // Thumbnail cache
+    private var thumbCache = NSCache<NSURL, NSImage>()
 
     // State
     private var items: [URL] = []
@@ -276,6 +288,8 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             searchField.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             searchField.widthAnchor.constraint(equalToConstant: 260)
         ])
+        
+        preview.isHidden = true
 
         // Table
         let col = NSTableColumn(identifier: .init("name"))
@@ -295,11 +309,62 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
 
         view.addSubview(scroll)
         scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        // Right preview panel
+        preview.wantsLayer = true
+        preview.layer?.backgroundColor = ColorSchemeToken.surface.cgColor
+        view.addSubview(preview)
+        preview.translatesAutoresizingMaskIntoConstraints = false
+
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: header.bottomAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            preview.leadingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            preview.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            preview.topAnchor.constraint(equalTo: header.bottomAnchor),
+            preview.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            preview.widthAnchor.constraint(equalToConstant: 280)
+        ])
+
+        // Preview subviews
+        previewImage.imageScaling = .scaleProportionallyUpOrDown
+        preview.addSubview(previewImage)
+        previewTitle.font = FontToken.uiMedium
+        previewTitle.textColor = ColorSchemeToken.textPrimary
+        previewTitle.lineBreakMode = .byTruncatingMiddle
+        preview.addSubview(previewTitle)
+        previewSubtitle.font = FontToken.ui
+        previewSubtitle.textColor = ColorSchemeToken.textSecondary
+        previewSubtitle.lineBreakMode = .byTruncatingMiddle
+        preview.addSubview(previewSubtitle)
+        previewPrimary.target = self
+        previewPrimary.action = #selector(openSelected)
+        previewPrimary.bezelStyle = .rounded
+        preview.addSubview(previewPrimary)
+
+        previewImage.translatesAutoresizingMaskIntoConstraints = false
+        previewTitle.translatesAutoresizingMaskIntoConstraints = false
+        previewSubtitle.translatesAutoresizingMaskIntoConstraints = false
+        previewPrimary.translatesAutoresizingMaskIntoConstraints = false
+
+        NSLayoutConstraint.activate([
+            previewImage.topAnchor.constraint(equalTo: preview.topAnchor, constant: TZ.x8),
+            previewImage.centerXAnchor.constraint(equalTo: preview.centerXAnchor),
+            previewImage.widthAnchor.constraint(equalToConstant: 180),
+            previewImage.heightAnchor.constraint(equalToConstant: 120),
+
+            previewTitle.topAnchor.constraint(equalTo: previewImage.bottomAnchor, constant: TZ.x5),
+            previewTitle.leadingAnchor.constraint(equalTo: preview.leadingAnchor, constant: TZ.x5),
+            previewTitle.trailingAnchor.constraint(equalTo: preview.trailingAnchor, constant: -TZ.x5),
+
+            previewSubtitle.topAnchor.constraint(equalTo: previewTitle.bottomAnchor, constant: TZ.x2),
+            previewSubtitle.leadingAnchor.constraint(equalTo: preview.leadingAnchor, constant: TZ.x5),
+            previewSubtitle.trailingAnchor.constraint(equalTo: preview.trailingAnchor, constant: -TZ.x5),
+
+            previewPrimary.topAnchor.constraint(equalTo: previewSubtitle.bottomAnchor, constant: TZ.x6),
+            previewPrimary.leadingAnchor.constraint(equalTo: preview.leadingAnchor, constant: TZ.x5)
         ])
 
         table.target = self
@@ -341,6 +406,24 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         filtered = []
         table.reloadData()
     }
+    private enum ItemKind { case folder, file }
+
+    private func itemKind(for url: URL) -> ItemKind {
+        ((try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false) ? .folder : .file
+    }
+
+    private func displayName(for url: URL) -> String {
+        (try? url.resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? url.lastPathComponent
+    }
+
+    private func iconForList(url: URL, kind: ItemKind) -> NSImage {
+        if kind == .folder, let img = NSImage(systemSymbolName: "folder", accessibilityDescription: nil) { return img }
+        if let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType {
+            return NSWorkspace.shared.icon(for: type)
+        }
+        return NSWorkspace.shared.icon(forFile: url.path)
+    }
+
     // Called by sidebar: show directory if already authorized; otherwise present non-blocking CTA
     func selectTarget(_ url: URL) {
         // If we already have access (security-scoped bookmark), open immediately.
@@ -358,11 +441,13 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         placeholderLabel.stringValue = "Seeker needs access to “\(url.lastPathComponent)”."
         placeholder.isHidden = false
         scroll.isHidden = true
+        preview.isHidden = true
     }
 
     private func hidePlaceholder() {
         placeholder.isHidden = true
         scroll.isHidden = false
+        preview.isHidden = true
     }
 
     @objc private func grantAccessTapped() {
@@ -507,6 +592,8 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             items = []
             filtered = []
         }
+        table.deselectAll(nil)
+        preview.isHidden = true
         table.reloadData()
     }
 
@@ -548,31 +635,59 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        // Single click = selection only. No navigation, no external apps.
-        // Navigation happens on double‑click (handled by DirectoryTableView → handleRowDoubleClick).
-        // This guarantees Finder (or any external handler) is never invoked from a selection.
+        let row = table.selectedRow
+        guard row >= 0, filtered.indices.contains(row) else {
+            preview.isHidden = true
+            return
+        }
+        preview.isHidden = false
+        let url = filtered[row]
+        updatePreview(for: url)
+    }
+
+
+    private final class DirectoryCellView: NSTableCellView {
+        let iconView = NSImageView()
+        let nameField = NSTextField(labelWithString: "")
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            identifier = NSUserInterfaceItemIdentifier("cell")
+            iconView.translatesAutoresizingMaskIntoConstraints = false
+            iconView.imageScaling = .scaleProportionallyUpOrDown
+            iconView.symbolConfiguration = .init(pointSize: 14, weight: .regular)
+            addSubview(iconView)
+
+            nameField.translatesAutoresizingMaskIntoConstraints = false
+            nameField.font = FontToken.ui
+            nameField.textColor = ColorSchemeToken.textPrimary
+            addSubview(nameField)
+
+            NSLayoutConstraint.activate([
+                iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: TZ.x6),
+                iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                iconView.widthAnchor.constraint(equalToConstant: 16),
+                iconView.heightAnchor.constraint(equalToConstant: 16),
+
+                nameField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: TZ.x3),
+                nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -TZ.x4),
+                nameField.centerYAnchor.constraint(equalTo: centerYAnchor)
+            ])
+            self.textField = nameField
+            self.imageView = iconView
+        }
+
+        required init?(coder: NSCoder) { fatalError() }
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("cell")
-        let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? {
-            let c = NSTableCellView()
-            c.identifier = id
-            let tf = NSTextField(labelWithString: "")
-            tf.font = FontToken.ui
-            tf.textColor = ColorSchemeToken.textPrimary
-            c.textField = tf
-            c.addSubview(tf)
-            tf.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: TZ.x8),
-                tf.centerYAnchor.constraint(equalTo: c.centerYAnchor)
-            ])
-            return c
-        }()
-
+        let cell = tableView.makeView(withIdentifier: id, owner: self) as? DirectoryCellView ?? DirectoryCellView()
         let url = filtered[row]
-        cell.textField?.stringValue = url.lastPathComponent
+        let kind = itemKind(for: url)
+        cell.nameField.stringValue = displayName(for: url)
+        cell.iconView.image = iconForList(url: url, kind: kind)
+        cell.toolTip = url.path
         return cell
     }
 
@@ -620,6 +735,90 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         let q = query.lowercased()
         filtered = items.filter { $0.lastPathComponent.lowercased().contains(q) }
         table.reloadData()
+    }
+    private func humanSize(_ bytes: Int64) -> String {
+        let fmt = ByteCountFormatter()
+        fmt.allowedUnits = [.useMB, .useGB, .useKB]
+        fmt.countStyle = .file
+        return fmt.string(fromByteCount: bytes)
+    }
+
+    private func quickFolderStats(_ url: URL, limit: Int = 500) async -> (count: Int, bytes: Int64) {
+        var count = 0
+        var bytes: Int64 = 0
+        let fm = FileManager.default
+        if let en = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
+            for case let u as URL in en {
+                if count >= limit { break }
+                let rv = try? u.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                if rv?.isRegularFile == true {
+                    bytes += Int64(rv?.fileSize ?? 0)
+                }
+                count += 1
+            }
+        }
+        return (count, bytes)
+    }
+
+    private func generateThumbnail(for url: URL, side: CGFloat = 256) async -> NSImage {
+        if let cached = thumbCache.object(forKey: url as NSURL) { return cached }
+        let req = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: side, height: side), scale: 2, representationTypes: .all)
+        let gen = QLThumbnailGenerator.shared
+        do {
+            let rep = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<QLThumbnailRepresentation, Error>) in
+                gen.generateBestRepresentation(for: req) { r, e in
+                    if let r = r { cont.resume(returning: r) } else { cont.resume(throwing: e ?? NSError(domain: "thumb", code: -1)) }
+                }
+            }
+            let img = rep.nsImage
+            thumbCache.setObject(img, forKey: url as NSURL)
+            return img
+        } catch {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+    }
+
+    private func updatePreview(for url: URL) {
+        let kind = itemKind(for: url)
+        previewTitle.stringValue = displayName(for: url)
+        previewSubtitle.stringValue = ""
+        previewImage.image = iconForList(url: url, kind: kind)
+        previewPrimary.toolTip = "Open"
+
+        if kind == .folder {
+            Task.detached { [weak self] in
+                guard let self else { return }
+                let (cnt, bytes) = await self.quickFolderStats(url)
+                await MainActor.run {
+                    self.previewSubtitle.stringValue = "\(cnt) items · \(self.humanSize(bytes))"
+                    self.previewImage.image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: nil) ?? self.previewImage.image
+                }
+            }
+        } else {
+            Task.detached { [weak self] in
+                guard let self else { return }
+                let rv = try? url.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey])
+                let sizeStr = self.humanSize(Int64(rv?.fileSize ?? 0))
+                let kindStr = rv?.contentType?.localizedDescription ?? "File"
+                let thumb = await self.generateThumbnail(for: url, side: 360)
+                await MainActor.run {
+                    self.previewSubtitle.stringValue = "\(kindStr) · \(sizeStr)"
+                    self.previewImage.image = thumb
+                }
+            }
+        }
+    }
+
+    @objc private func openSelected() {
+        let row = table.selectedRow
+        guard row >= 0, filtered.indices.contains(row) else { return }
+        let url = filtered[row]
+        if itemKind(for: url) == .folder {
+            navigate(to: url)
+        } else {
+            // Keep in-app for now; no Finder. We will wire Quick Look panel later.
+            NSSound.beep()
+        }
     }
 }
 
@@ -711,3 +910,5 @@ final class FolderAccessManager {
         }
     }
 }
+
+
