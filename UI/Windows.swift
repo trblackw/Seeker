@@ -208,6 +208,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private let crumbBar = NSStackView()
     private let searchField = NSSearchField()
     private let scopePopUp = NSPopUpButton()
+    private let grantHomeButton = NSButton(title: "Grant Home", target: nil, action: nil)
     private let scroll = NSScrollView()
     private let table = DirectoryTableView()
 
@@ -217,6 +218,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private let previewTitle = NSTextField(labelWithString: "")
     private let previewSubtitle = NSTextField(labelWithString: "")
     private let previewPrimary = NSButton(title: "Open", target: nil, action: nil)
+    
 
     // Thumbnail cache
     private var thumbCache = NSCache<NSURL, NSImage>()
@@ -231,6 +233,21 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private var isShowingSearchResults = false
     private var searchResults: [URL] = []
     private var metadataQuery: NSMetadataQuery?
+    private var homeURL: URL { FileManager.default.homeDirectoryForCurrentUser }
+
+    private func updateHomeAccessButtonVisibility() {
+        // Hide if we already have a bookmark for the home folder
+        let has = FolderAccessManager.shared.hasAccess(for: homeURL) != nil
+        grantHomeButton.isHidden = has
+    }
+
+    private func removeMetadataObservers() {
+        if let mq = metadataQuery {
+            NotificationCenter.default.removeObserver(self, name: .NSMetadataQueryDidStartGathering, object: mq)
+            NotificationCenter.default.removeObserver(self, name: .NSMetadataQueryDidUpdate, object: mq)
+            NotificationCenter.default.removeObserver(self, name: .NSMetadataQueryDidFinishGathering, object: mq)
+        }
+    }
 
     // Navigation history
     private var backStack: [URL] = []
@@ -246,6 +263,23 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         searchScope = (scopePopUp.indexOfSelectedItem == 0) ? .all : .currentFolder
         // Re-run current search to reflect new scope
         controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    }
+    
+    @objc private func grantHomeAccessTapped() {
+        FolderAccessManager.shared.requestAccess(for: homeURL) { [weak self] granted in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                if granted != nil {
+                    self.updateHomeAccessButtonVisibility()
+                    // If we’re already in All scope with a query, refresh Spotlight results
+                    if self.searchScope == .all && !self.query.isEmpty {
+                        self.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+                    }
+                } else {
+                    NSSound.beep()
+                }
+            }
+        }
     }
 
     override func loadView() {
@@ -277,7 +311,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         crumbBar.setContentCompressionResistancePriority(NSLayoutConstraint.Priority.defaultLow, for: .horizontal)
         header.addSubview(crumbBar)
 
-        searchField.placeholderString = "Filter…"
+        searchField.placeholderString = "Search…"
         searchField.font = FontToken.ui
         searchField.focusRingType = .none
         searchField.bezelStyle = .roundedBezel
@@ -285,8 +319,12 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         searchField.layer?.cornerRadius = 8
         searchField.layer?.backgroundColor = ColorSchemeToken.surface.cgColor
         searchField.delegate = self
+        searchField.target = self
+        searchField.action = #selector(searchFieldChanged(_:))
+        searchField.sendsSearchStringImmediately = true
+        searchField.sendsWholeSearchString = false
         header.addSubview(searchField)
-    
+
         // Scope selector (left of the search field)
         scopePopUp.addItems(withTitles: ["All", "Current Folder"])
         scopePopUp.target = self
@@ -295,16 +333,27 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         scopePopUp.bezelStyle = .rounded
         header.addSubview(scopePopUp)
 
+        // One-click Home access (for sandboxed global search)
+        grantHomeButton.target = self
+        grantHomeButton.action = #selector(grantHomeAccessTapped)
+        grantHomeButton.bezelStyle = .rounded
+        grantHomeButton.font = FontToken.ui
+        header.addSubview(grantHomeButton)
+
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
         pathLabel.isHidden = true // breadcrumb bar supersedes the raw path text
 
         crumbBar.translatesAutoresizingMaskIntoConstraints = false
         searchField.translatesAutoresizingMaskIntoConstraints = false
         scopePopUp.translatesAutoresizingMaskIntoConstraints = false
+        grantHomeButton.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             crumbBar.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: TZ.x4),
             crumbBar.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            crumbBar.trailingAnchor.constraint(lessThanOrEqualTo: scopePopUp.leadingAnchor, constant: -TZ.x4),
+            crumbBar.trailingAnchor.constraint(lessThanOrEqualTo: grantHomeButton.leadingAnchor, constant: -TZ.x4),
+
+            grantHomeButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            grantHomeButton.trailingAnchor.constraint(equalTo: scopePopUp.leadingAnchor, constant: -TZ.x3),
 
             scopePopUp.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             scopePopUp.trailingAnchor.constraint(equalTo: searchField.leadingAnchor, constant: -TZ.x3),
@@ -313,7 +362,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             searchField.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             searchField.widthAnchor.constraint(equalToConstant: 260)
         ])
-        
+
         preview.isHidden = true
 
         // Table
@@ -393,6 +442,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         ])
 
         table.target = self
+        updateHomeAccessButtonVisibility()
 
         updatePathLabel()
         // Placeholder overlay (hidden by default)
@@ -430,6 +480,53 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         // No auto-open; wait for user action
         filtered = []
         table.reloadData()
+    }
+
+    @objc private func searchFieldChanged(_ sender: NSSearchField) {
+        performSearchUpdate(with: sender.stringValue)
+    }
+
+    private func performSearchUpdate(with raw: String) {
+        query = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            isShowingSearchResults = false
+            searchResults.removeAll()
+            filtered = items
+            table.reloadData()
+            return
+        }
+        switch searchScope {
+        case .all:
+            metadataQuery?.stop()
+            removeMetadataObservers()
+            let mq = NSMetadataQuery()
+            metadataQuery = mq
+            // Use only local / indexed scopes. Do NOT mix with iCloud scopes,
+            // otherwise NSMetadataQuery throws an exception.
+            var scopes: [String] = [
+                NSMetadataQueryIndexedLocalComputerScope,
+                NSMetadataQueryIndexedNetworkScope,
+                NSMetadataQueryUserHomeScope
+            ]
+            // Fallback for older systems where `NSMetadataQueryUserHomeScope` may be
+            // unavailable at runtime — just remove it if the symbol is empty.
+            scopes = scopes.filter { !$0.isEmpty }
+            mq.searchScopes = scopes
+            mq.predicate = NSPredicate(
+                format: "(kMDItemFSName CONTAINS[cd] %@) OR (kMDItemDisplayName CONTAINS[cd] %@)",
+                query, query
+            )
+            NotificationCenter.default.addObserver(self, selector: #selector(metadataQueryStarted(_:)), name: .NSMetadataQueryDidStartGathering, object: mq)
+            NotificationCenter.default.addObserver(self, selector: #selector(metadataQueryUpdated(_:)), name: .NSMetadataQueryDidUpdate, object: mq)
+            NotificationCenter.default.addObserver(self, selector: #selector(metadataQueryUpdated(_:)), name: .NSMetadataQueryDidFinishGathering, object: mq)
+            isShowingSearchResults = true
+            searchResults.removeAll()
+            table.reloadData()
+            mq.start()
+        case .currentFolder:
+            isShowingSearchResults = false
+            applyFilter()
+        }
     }
     private enum ItemKind { case folder, file }
 
@@ -617,9 +714,22 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             items = []
             filtered = []
         }
+        // Navigating cancels global search mode and updates home-button visibility
+        isShowingSearchResults = false
+        searchResults.removeAll()
+        updateHomeAccessButtonVisibility()
         table.deselectAll(nil)
         preview.isHidden = true
         table.reloadData()
+    }
+    
+    private func currentRows() -> [URL] {
+          return isShowingSearchResults ? searchResults : filtered
+      }
+    
+    deinit {
+        removeMetadataObservers()
+        metadataQuery?.stop()
     }
 
     func focusSearch() {
@@ -656,17 +766,18 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        filtered.count
+        currentRows().count
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
-        guard row >= 0, filtered.indices.contains(row) else {
+        let rows = currentRows()
+        guard row >= 0, rows.indices.contains(row) else {
             preview.isHidden = true
             return
         }
         preview.isHidden = false
-        let url = filtered[row]
+        let url = rows[row]
         updatePreview(for: url)
     }
 
@@ -708,7 +819,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("cell")
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? DirectoryCellView ?? DirectoryCellView()
-        let url = filtered[row]
+        let url = currentRows()[row]
         let kind = itemKind(for: url)
         cell.nameField.stringValue = displayName(for: url)
         cell.iconView.image = iconForList(url: url, kind: kind)
@@ -718,8 +829,9 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
 
     @objc func handleRowDoubleClick(_ sender: Any) {
         let row = table.clickedRow
-        guard row >= 0, filtered.indices.contains(row) else { return }
-        let url = filtered[row]
+        let rows = currentRows()
+        guard row >= 0, rows.indices.contains(row) else { return }
+        let url = rows[row]
         if let dirURL = resolvedDirectoryIfAny(for: url) {
             // Navigate inside Seeker, obtaining permission if needed
             navigate(to: dirURL)
@@ -734,8 +846,9 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         // Return/Enter opens the selected folder if applicable
         if event.keyCode == 36 || event.keyCode == 76 { // return or keypad-enter
             let row = table.selectedRow
-            if row >= 0, filtered.indices.contains(row) {
-                let url = filtered[row]
+            let rows = currentRows()
+            if row >= 0, rows.indices.contains(row) {
+                let url = rows[row]
                 if let dirURL = resolvedDirectoryIfAny(for: url) {
                     navigate(to: dirURL)
                     return
@@ -744,11 +857,33 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         }
         super.keyDown(with: event)
     }
+    
+    @objc private func metadataQueryStarted(_ note: Notification) {
+        // optional: spinner/progress later
+    }
+
+    @objc private func metadataQueryUpdated(_ note: Notification) {
+        guard let mq = metadataQuery else { return }
+        mq.disableUpdates()
+        var urls: [URL] = []
+        for i in 0..<mq.resultCount {
+            if let item = mq.result(at: i) as? NSMetadataItem,
+               let path = item.value(forAttribute: kMDItemPath as String) as? String {
+                urls.append(URL(fileURLWithPath: path))
+            }
+            if urls.count > 5000 { break } // safety cap
+        }
+        mq.enableUpdates()
+        self.isShowingSearchResults = true
+        self.searchResults = urls
+        self.table.reloadData()
+        self.preview.isHidden = true
+    }
 
     // MARK: - Search
     func controlTextDidChange(_ obj: Notification) {
-        query = searchField.stringValue
-        applyFilter()
+        let text = (obj.object as? NSSearchField)?.stringValue ?? searchField.stringValue
+        performSearchUpdate(with: text)
     }
 
     private func applyFilter() {
@@ -836,8 +971,9 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
 
     @objc private func openSelected() {
         let row = table.selectedRow
-        guard row >= 0, filtered.indices.contains(row) else { return }
-        let url = filtered[row]
+        let rows = currentRows()
+        guard row >= 0, rows.indices.contains(row) else { return }
+        let url = rows[row]
         if itemKind(for: url) == .folder {
             navigate(to: url)
         } else {
