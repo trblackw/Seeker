@@ -658,15 +658,18 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     // Ensure sandbox access (if required) before opening a directory
-     func navigate(to url: URL) {
+    func navigate(to url: URL) {
         FolderAccessManager.shared.ensureAccess(to: url) { [weak self] (grantedURL: URL?) in
-            guard let self = self, let u = grantedURL else {
-                NSSound.beep()
-                return
-            }
+            guard let self = self else { return }
             DispatchQueue.main.async {
-                self.hidePlaceholder()
-                self.openDirectory(u)
+                if let u = grantedURL {
+                    self.hidePlaceholder()
+                    self.openDirectory(u)
+                } else {
+                    // No bookmark yet – behave like the sidebar: show non-modal CTA
+                    self.pendingURLForGrant = url
+                    self.showPlaceholder(for: url)
+                }
             }
         }
     }
@@ -674,7 +677,8 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     @objc private func breadcrumbTapped(_ sender: NSButton) {
         let idx = sender.tag
         guard idx >= 0 && idx < crumbURLs.count else { return }
-        navigate(to: crumbURLs[idx])
+        // Use the same flow as the sidebar – either navigate immediately or show grant-access UI
+        selectTarget(crumbURLs[idx])
     }
 
     private func updatePathLabel() {
