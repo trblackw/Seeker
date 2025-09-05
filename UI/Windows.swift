@@ -1,4 +1,17 @@
 // MARK: - Window & Root Controllers (minimal)
+
+// Custom sidebar table that prevents any default "open in Finder" behavior
+final class SidebarTableView: NSTableView {
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            // Do not let AppKit/Launch Services perform a default open.
+            // Route through delegate via selection change only.
+            super.mouseDown(with: event) // allow selection to update
+            return
+        }
+        super.mouseDown(with: event)
+    }
+}
 final class LinearWindowController: NSWindowController {
     convenience init(content: NSViewController) {
         let w = NSWindow(
@@ -40,7 +53,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         ]
     }()
     var firstEntryURL: URL? { entries.first?.url }
-    private let table = NSTableView()
+    private let table = SidebarTableView()
     private let scroll = NSScrollView()
     weak var delegate: SidebarSelectionDelegate?
 
@@ -57,6 +70,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         table.rowSizeStyle = .medium
         table.allowsMultipleSelection = false
         table.selectionHighlightStyle = .sourceList
+        table.target = self
+        table.doubleAction = nil
         table.delegate = self
         table.dataSource = self
 
@@ -136,18 +151,13 @@ final class SeekerRootViewController: NSSplitViewController, SidebarSelectionDel
 
         self.addSplitViewItem(sidebarItem)
         self.addSplitViewItem(mainItem)
-        // Select the first sidebar entry by default
-        DispatchQueue.main.async { [weak self] in
-            self?.sidebarVC.selectRow(0)
-            if let url = self?.sidebarVC.firstEntryURL {
-                self?.directoryVC.openDirectory(url)
-            }
-        }
+        // Do not auto-open any folder on launch (avoid system permission prompts).
+        // Leave selection empty; user click will drive navigation.
     }
 
     // SidebarSelectionDelegate
     func sidebarDidSelectDirectory(_ url: URL) {
-        directoryVC.openDirectory(url)
+        directoryVC.selectTarget(url) // shows contents if already authorized, else a non-modal placeholder with a Grant Access button
     }
 }
 
@@ -176,6 +186,11 @@ final class DirectoryTableView: NSTableView {
 }
 
 final class DirectoryListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+    // Placeholder for unauthorized locations
+    private let placeholder = NSView()
+    private let placeholderLabel = NSTextField(labelWithString: "")
+    private let placeholderButton = NSButton(title: "Grant Access", target: nil, action: nil)
+    private var pendingURLForGrant: URL?
     // Helper: treat folders and symlinks-to-folders as navigable directories
     private func resolvedDirectoryIfAny(for url: URL) -> URL? {
         // Resolve symlinks first
@@ -290,7 +305,79 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         table.target = self
 
         updatePathLabel()
-        openDirectory(currentDirectory)
+        // Placeholder overlay (hidden by default)
+        placeholder.wantsLayer = true
+        placeholder.layer?.backgroundColor = NSColor.clear.cgColor
+        view.addSubview(placeholder)
+        placeholder.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            placeholder.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            placeholder.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            placeholder.topAnchor.constraint(equalTo: header.bottomAnchor),
+            placeholder.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        placeholder.isHidden = true
+
+        placeholderLabel.font = FontToken.uiMedium
+        placeholderLabel.textColor = ColorSchemeToken.textSecondary
+        placeholderLabel.alignment = .center
+        placeholder.addSubview(placeholderLabel)
+
+        placeholderButton.target = self
+        placeholderButton.action = #selector(grantAccessTapped)
+        placeholderButton.bezelStyle = .rounded
+        placeholder.addSubview(placeholderButton)
+
+        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        placeholderButton.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            placeholderLabel.centerXAnchor.constraint(equalTo: placeholder.centerXAnchor),
+            placeholderLabel.centerYAnchor.constraint(equalTo: placeholder.centerYAnchor, constant: -12),
+            placeholderButton.centerXAnchor.constraint(equalTo: placeholder.centerXAnchor),
+            placeholderButton.topAnchor.constraint(equalTo: placeholderLabel.bottomAnchor, constant: 8)
+        ])
+
+        // No auto-open; wait for user action
+        filtered = []
+        table.reloadData()
+    }
+    // Called by sidebar: show directory if already authorized; otherwise present non-blocking CTA
+    func selectTarget(_ url: URL) {
+        // If we already have access (security-scoped bookmark), open immediately.
+        if let accessible = FolderAccessManager.shared.hasAccess(for: url) {
+            openDirectory(accessible)
+            hidePlaceholder()
+        } else {
+            // Show placeholder; do not trigger NSOpenPanel yet.
+            pendingURLForGrant = url
+            showPlaceholder(for: url)
+        }
+    }
+
+    private func showPlaceholder(for url: URL) {
+        placeholderLabel.stringValue = "Seeker needs access to “\(url.lastPathComponent)”."
+        placeholder.isHidden = false
+        scroll.isHidden = true
+    }
+
+    private func hidePlaceholder() {
+        placeholder.isHidden = true
+        scroll.isHidden = false
+    }
+
+    @objc private func grantAccessTapped() {
+        guard let url = pendingURLForGrant else { return }
+        FolderAccessManager.shared.requestAccess(for: url) { [weak self] granted in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                if let u = granted {
+                    self.hidePlaceholder()
+                    self.openDirectory(u)
+                } else {
+                    NSSound.beep()
+                }
+            }
+        }
     }
 
     override func viewWillAppear() {
@@ -364,13 +451,14 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     // Ensure sandbox access (if required) before opening a directory
-    private func navigate(to url: URL) {
+     func navigate(to url: URL) {
         FolderAccessManager.shared.ensureAccess(to: url) { [weak self] (grantedURL: URL?) in
             guard let self = self, let u = grantedURL else {
                 NSSound.beep()
                 return
             }
             DispatchQueue.main.async {
+                self.hidePlaceholder()
                 self.openDirectory(u)
             }
         }
@@ -541,13 +629,13 @@ final class FolderAccessManager {
     private let keyPrefix = "dev.seeker.bookmark."
     private init() {}
 
-    func ensureAccess(to url: URL, completion: @escaping (URL?) -> Void) {
-        // If we already have a bookmark for a parent of this URL, try that first
-        if let resolved = resolveBookmark(for: url) {
-            completion(resolved)
-            return
-        }
-        // Prompt the user to grant access to this folder (or its parent) once
+    // Returns an accessible URL if we already hold a security-scoped bookmark; does not prompt.
+    func hasAccess(for url: URL) -> URL? {
+        return resolveBookmark(for: url)
+    }
+
+    // Explicitly prompts the user to grant access to this folder, then stores the bookmark.
+    func requestAccess(for url: URL, completion: @escaping (URL?) -> Void) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseFiles = false
@@ -565,22 +653,50 @@ final class FolderAccessManager {
         }
     }
 
-    // Try to use an existing bookmark for this URL or any of its ancestors
+    func ensureAccess(to url: URL, completion: @escaping (URL?) -> Void) {
+        if let resolved = resolveBookmark(for: url) {
+            completion(resolved)
+        } else {
+            completion(nil)
+        }
+    }
+
+    // Try to use an existing bookmark for this URL or any of its ancestors.
+    // Always return a URL that is INSIDE the security-scoped root so FS reads are permitted.
     private func resolveBookmark(for url: URL) -> URL? {
-        // Walk up the path looking for any stored bookmark
-        var probe = url.standardizedFileURL
-        let fm = FileManager.default
+        let target = url.standardizedFileURL
+        var probe  = target
         while true {
             if let data = UserDefaults.standard.data(forKey: keyPrefix + probe.path) {
                 var stale = false
-                if let resolved = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope], relativeTo: nil, bookmarkDataIsStale: &stale),
-                   !stale {
-                    _ = resolved.startAccessingSecurityScopedResource()
-                    // If the bookmark was for a parent, append the remainder relative to it
-                    if resolved != probe, fm.fileExists(atPath: url.path) {
-                        return url
+                if let scopedRoot = try? URL(
+                    resolvingBookmarkData: data,
+                    options: [.withSecurityScope],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &stale
+                ), !stale {
+                    _ = scopedRoot.startAccessingSecurityScopedResource()
+
+                    // Exact match → just return the scoped root
+                    if scopedRoot.standardizedFileURL == probe {
+                        // If the target is deeper than probe, append the remainder inside the scope
+                        if target == probe { return scopedRoot }
                     }
-                    return resolved
+
+                    // Build child URL under the scoped root
+                    let rootPath   = scopedRoot.standardizedFileURL.path
+                    let targetPath = target.path
+                    if targetPath.hasPrefix(rootPath) {
+                        let remainder = String(targetPath.dropFirst(rootPath.count))
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                        if remainder.isEmpty { return scopedRoot }
+                        return remainder.split(separator: "/").reduce(scopedRoot) {
+                            $0.appendingPathComponent(String($1))
+                        }
+                    } else {
+                        // Best effort: return scoped root
+                        return scopedRoot
+                    }
                 }
             }
             if probe.path == "/" { break }
