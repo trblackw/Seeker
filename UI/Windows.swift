@@ -28,6 +28,8 @@ final class LinearWindowController: NSWindowController {
         w.isMovableByWindowBackground = true
         w.toolbarStyle = .unified
         w.backgroundColor = ColorSchemeToken.bg
+        w.setContentSize(NSSize(width: 1280, height: 800))
+        w.minSize = NSSize(width: 900, height: 600)
         self.init(window: w)
         w.contentViewController = content
         w.center()
@@ -40,6 +42,8 @@ final class SeekerRootViewController: NSSplitViewController {
     private let sidebarVC = SidebarViewController()
     private let mainVC = DirectoryViewController()
     private let inspectorVC = InspectorViewController()
+    // Command Palette overlay
+    private let palette = CommandPaletteView()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -61,6 +65,69 @@ final class SeekerRootViewController: NSSplitViewController {
         addSplitViewItem(left)
         addSplitViewItem(center)
         addSplitViewItem(right)
+
+        // Command palette overlay
+        view.addSubview(palette)
+        palette.translatesAutoresizingMaskIntoConstraints = false
+        // Command palette overlay constraints (responsive)
+        var paletteConstraints: [NSLayoutConstraint] = [
+            palette.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            palette.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            // Keep generous margins while allowing the palette to grow with the window
+            palette.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: TZ.x12),
+            palette.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -TZ.x12),
+            // Absolute caps so it never becomes comically large/tall
+            palette.widthAnchor.constraint(lessThanOrEqualToConstant: 1000),
+            palette.heightAnchor.constraint(lessThanOrEqualToConstant: 520)
+        ]
+
+        // Preferred width when space allows (soft constraint)
+        let preferredWidth = palette.widthAnchor.constraint(equalToConstant: 820)
+        preferredWidth.priority = .defaultLow
+        paletteConstraints.append(preferredWidth)
+
+        NSLayoutConstraint.activate(paletteConstraints)
+        palette.isHidden = true
+        buildCommands()
+
+        // Observe global toggle (from ⌘K CommandMenu)
+        NotificationCenter.default.addObserver(self, selector: #selector(togglePaletteFromMenu), name: .togglePalette, object: nil)
+    }
+
+    @objc private func togglePaletteFromMenu() { togglePalette() }
+
+    private func togglePalette() {
+        if palette.isHidden {
+            palette.show()
+        } else {
+            palette.hide()
+        }
+    }
+
+    private func buildCommands() {
+        weak var weakSelf = self
+        let cmds: [Command] = [
+            Command(title: "Focus Search", subtitle: "⌘F") { weakSelf?.mainVC.focusSearch() },
+            Command(title: "Go Up", subtitle: "⌘↑") { weakSelf?.mainVC.goUpViaCommand() },
+            Command(title: "Toggle Inspector", subtitle: "⌘I") { weakSelf?.toggleInspector() },
+            Command(title: "Open Terminal Here", subtitle: nil) { weakSelf?.mainVC.openTerminalHere() }
+        ]
+        palette.setCommands(cmds)
+    }
+
+    private func toggleInspector() {
+        guard let inspectorItem = splitViewItems.last else { return }
+        inspectorItem.isCollapsed.toggle()
+    }
+
+    // Fallback: handle ⌘K here too in case menu doesn't fire
+    override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command),
+           event.charactersIgnoringModifiers?.lowercased() == "k" {
+            togglePalette()
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 

@@ -8,115 +8,6 @@ import AppKit
 import QuickLookThumbnailing
 import Foundation
 
-// MARK: - Design Tokens (shared with AppKit views)
-
-enum TZ { // spacing scale (8-pt base)
-    static let x0: CGFloat = 0
-    static let x1: CGFloat = 4
-    static let x2: CGFloat = 8
-    static let x3: CGFloat = 12
-    static let x4: CGFloat = 16
-    static let x5: CGFloat = 20
-    static let x6: CGFloat = 24
-    static let x8: CGFloat = 32
-    static let x12: CGFloat = 48
-    static let x16: CGFloat = 64
-}
-
-enum FontToken {
-    static var ui: NSFont { NSFont.systemFont(ofSize: 13, weight: .regular) }
-    static var uiMedium: NSFont { NSFont.systemFont(ofSize: 13, weight: .medium) }
-    static var small: NSFont { NSFont.systemFont(ofSize: 12, weight: .regular) }
-    static var title: NSFont { NSFont.systemFont(ofSize: 20, weight: .semibold) }
-}
-
-enum ColorSchemeToken {
-    private static var isDark: Bool {
-        (NSApp?.effectiveAppearance.name == .darkAqua)
-    }
-
-    static var bg: NSColor {
-        isDark ? NSColor(calibratedWhite: 0.09, alpha: 1) : NSColor(calibratedWhite: 0.985, alpha: 1)
-    }
-    static var surface: NSColor {
-        isDark ? NSColor(calibratedWhite: 0.13, alpha: 1) : NSColor(calibratedWhite: 0.97, alpha: 1)
-    }
-    static var elevated: NSColor {
-        isDark ? NSColor(calibratedWhite: 0.16, alpha: 1) : NSColor(calibratedWhite: 0.95, alpha: 1)
-    }
-    static var textPrimary: NSColor {
-        isDark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.12, alpha: 1)
-    }
-    static var textSecondary: NSColor {
-        isDark ? NSColor(calibratedWhite: 0.70, alpha: 1) : NSColor(calibratedWhite: 0.45, alpha: 1)
-    }
-    static var accent: NSColor {
-        NSColor(calibratedRed: 0.62, green: 0.48, blue: 1.0, alpha: 1.0) // ~#9E7AFF
-    }
-    static var separator: NSColor {
-        isDark ? NSColor(calibratedWhite: 1.0, alpha: 0.06) : NSColor(calibratedWhite: 0.0, alpha: 0.08)
-    }
-    static var selectionFill: NSColor {
-        isDark ? NSColor(calibratedWhite: 1.0, alpha: 0.08) : NSColor(calibratedWhite: 0.0, alpha: 0.06)
-    }
-}
-
-// MARK: - Styling helpers
-
-extension NSView {
-    func applyCardBackground() {
-        wantsLayer = true
-        layer?.cornerRadius = 10
-        layer?.backgroundColor = ColorSchemeToken.surface.cgColor
-        layer?.masksToBounds = false
-        layer?.shadowColor = NSColor.black.withAlphaComponent(0.25).cgColor
-        layer?.shadowOpacity = 0.12
-        layer?.shadowOffset = CGSize(width: 0, height: -1)
-        layer?.shadowRadius = 8
-    }
-
-    func addHairlineSeparator(edge: NSRectEdge) {
-        let sep = NSView(frame: .zero)
-        sep.wantsLayer = true
-        sep.layer?.backgroundColor = ColorSchemeToken.separator.cgColor
-        addSubview(sep)
-        sep.translatesAutoresizingMaskIntoConstraints = false
-        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-        switch edge {
-        case .minY:
-            NSLayoutConstraint.activate([
-                sep.heightAnchor.constraint(equalToConstant: 1.0 / scale),
-                sep.leadingAnchor.constraint(equalTo: leadingAnchor),
-                sep.trailingAnchor.constraint(equalTo: trailingAnchor),
-                sep.bottomAnchor.constraint(equalTo: bottomAnchor)
-            ])
-        case .maxY:
-            NSLayoutConstraint.activate([
-                sep.heightAnchor.constraint(equalToConstant: 1.0 / scale),
-                sep.leadingAnchor.constraint(equalTo: leadingAnchor),
-                sep.trailingAnchor.constraint(equalTo: trailingAnchor),
-                sep.topAnchor.constraint(equalTo: topAnchor)
-            ])
-        case .minX:
-            NSLayoutConstraint.activate([
-                sep.widthAnchor.constraint(equalToConstant: 1.0 / scale),
-                sep.topAnchor.constraint(equalTo: topAnchor),
-                sep.bottomAnchor.constraint(equalTo: bottomAnchor),
-                sep.trailingAnchor.constraint(equalTo: trailingAnchor)
-            ])
-        case .maxX:
-            NSLayoutConstraint.activate([
-                sep.widthAnchor.constraint(equalToConstant: 1.0 / scale),
-                sep.topAnchor.constraint(equalTo: topAnchor),
-                sep.bottomAnchor.constraint(equalTo: bottomAnchor),
-                sep.leadingAnchor.constraint(equalTo: leadingAnchor)
-            ])
-        @unknown default:
-            break
-        }
-    }
-}
-
 // MARK: - Utilities & Thumbnail Cache
 
 /// Human-friendly size and date formatters reused across the UI.
@@ -625,5 +516,25 @@ final class DirectoryViewController: NSViewController, NSTableViewDataSource, NS
         currentDirectory = parent
         updatePathLabel()
         loadDirectory(currentDirectory)
+    }
+
+    // MARK: - Command Palette helpers
+
+    /// Focuses the header search field (used by Command Palette)
+    func focusSearch() {
+        view.window?.makeFirstResponder(searchField)
+    }
+
+    /// Navigates to the parent directory (used by Command Palette)
+    func goUpViaCommand() {
+        goUpDirectory()
+    }
+
+    /// Opens macOS Terminal at the current directory (used by Command Palette)
+    func openTerminalHere() {
+        let task = Process()
+        task.launchPath = "/usr/bin/open"
+        task.arguments = ["-a", "Terminal", currentDirectory.path]
+        try? task.run()
     }
 }

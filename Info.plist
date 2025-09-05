@@ -1,10 +1,3 @@
-//
-//  SeekerApp.swift
-//  Seeker
-//
-//  Created by Tucker Reeve Blackwell on 9/4/25.
-//
-
 import SwiftUI
 import AppKit
 
@@ -21,8 +14,15 @@ struct SeekerApp: App {
         WindowGroup { EmptyView() }
             .windowStyle(.hiddenTitleBar)
         Settings {
-            Text("Seeker Preferences")
-                .padding()
+            Text("Seeker Preferences").padding()
+        }
+        .commands {
+            CommandMenu("Seeker") {
+                Button("Command Palette…") {
+                    NotificationCenter.default.post(name: .togglePalette, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: .command)
+            }
         }
     }
 }
@@ -31,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var wc: LinearWindowController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.appearance = NSAppearance(named: .darkAqua) // optional default dark
+        NSApp.appearance = NSAppearance(named: .darkAqua)
         let root = SeekerRootViewController()
         wc = LinearWindowController(content: root)
         wc.showWindow(self)
