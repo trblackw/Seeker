@@ -20,23 +20,134 @@ final class LinearWindowController: NSWindowController {
     }
 }
 
-final class SeekerRootViewController: NSViewController {
-    private let mainVC = DirectoryListViewController()
+// MARK: - SidebarViewController
+final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    struct SidebarEntry {
+        let name: String
+        let url: URL
+    }
+    let entries: [SidebarEntry] = {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [
+            SidebarEntry(name: "Documents", url: home.appendingPathComponent("Documents")),
+            SidebarEntry(name: "Library", url: home.appendingPathComponent("Library")),
+            SidebarEntry(name: "Desktop", url: home.appendingPathComponent("Desktop")),
+            SidebarEntry(name: "Downloads", url: home.appendingPathComponent("Downloads")),
+            SidebarEntry(name: "Music", url: home.appendingPathComponent("Music")),
+            SidebarEntry(name: "Pictures", url: home.appendingPathComponent("Pictures")),
+            SidebarEntry(name: "Movies", url: home.appendingPathComponent("Movies")),
+            SidebarEntry(name: "Public", url: home.appendingPathComponent("Public"))
+        ]
+    }()
+    var firstEntryURL: URL? { entries.first?.url }
+    private let table = NSTableView()
+    private let scroll = NSScrollView()
+    weak var delegate: SidebarSelectionDelegate?
 
     override func loadView() {
         self.view = NSView()
         view.wantsLayer = true
-        view.layer?.backgroundColor = ColorSchemeToken.bg.cgColor
+        view.layer?.backgroundColor = ColorSchemeToken.surface.cgColor
 
-        addChild(mainVC)
-        view.addSubview(mainVC.view)
-        mainVC.view.translatesAutoresizingMaskIntoConstraints = false
+        let col = NSTableColumn(identifier: .init("sidebar"))
+        col.title = ""
+        col.width = 200
+        table.addTableColumn(col)
+        table.headerView = nil
+        table.rowSizeStyle = .medium
+        table.allowsMultipleSelection = false
+        table.selectionHighlightStyle = .sourceList
+        table.delegate = self
+        table.dataSource = self
+
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        view.addSubview(scroll)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            mainVC.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            mainVC.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            mainVC.view.topAnchor.constraint(equalTo: view.topAnchor),
-            mainVC.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+    }
+
+    // MARK: - Table Data Source/Delegate
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        return entries.count
+    }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let id = NSUserInterfaceItemIdentifier("sidebarCell")
+        let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? {
+            let c = NSTableCellView()
+            c.identifier = id
+            let tf = NSTextField(labelWithString: "")
+            tf.font = FontToken.ui
+            tf.textColor = ColorSchemeToken.textPrimary
+            c.textField = tf
+            c.addSubview(tf)
+            tf.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 16),
+                tf.centerYAnchor.constraint(equalTo: c.centerYAnchor)
+            ])
+            return c
+        }()
+        cell.textField?.stringValue = entries[row].name
+        return cell
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        let row = table.selectedRow
+        guard row >= 0, entries.indices.contains(row) else { return }
+        delegate?.sidebarDidSelectDirectory(entries[row].url)
+    }
+    // For initial selection programmatically if needed
+    func selectRow(_ idx: Int) {
+        table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+    }
+}
+
+protocol SidebarSelectionDelegate: AnyObject {
+    func sidebarDidSelectDirectory(_ url: URL)
+}
+
+// MARK: - SeekerRootViewController with Split View
+final class SeekerRootViewController: NSSplitViewController, SidebarSelectionDelegate {
+    private let sidebarVC = SidebarViewController()
+    private let directoryVC = DirectoryListViewController()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        sidebarVC.delegate = self
+
+        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarVC)
+        sidebarItem.minimumThickness = 160
+        sidebarItem.maximumThickness = 240
+        sidebarItem.preferredThicknessFraction = 0
+        sidebarItem.canCollapse = false
+        sidebarItem.holdingPriority = NSLayoutConstraint.Priority.defaultHigh
+        sidebarItem.titlebarSeparatorStyle = .automatic
+        sidebarItem.isCollapsed = false
+
+        let mainItem = NSSplitViewItem(viewController: directoryVC)
+        mainItem.minimumThickness = 300
+
+        self.addSplitViewItem(sidebarItem)
+        self.addSplitViewItem(mainItem)
+        // Select the first sidebar entry by default
+        DispatchQueue.main.async { [weak self] in
+            self?.sidebarVC.selectRow(0)
+            if let url = self?.sidebarVC.firstEntryURL {
+                self?.directoryVC.openDirectory(url)
+            }
+        }
+    }
+
+    // SidebarSelectionDelegate
+    func sidebarDidSelectDirectory(_ url: URL) {
+        directoryVC.openDirectory(url)
     }
 }
 
@@ -346,6 +457,12 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
 
     func numberOfRows(in tableView: NSTableView) -> Int {
         filtered.count
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        // Single click = selection only. No navigation, no external apps.
+        // Navigation happens on double‑click (handled by DirectoryTableView → handleRowDoubleClick).
+        // This guarantees Finder (or any external handler) is never invoked from a selection.
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
