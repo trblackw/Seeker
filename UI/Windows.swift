@@ -1,5 +1,6 @@
 // MARK: - Window & Root Controllers (minimal)
 
+
 // Custom sidebar table that prevents any default "open in Finder" behavior
 final class SidebarTableView: NSTableView {
     override func mouseDown(with event: NSEvent) {
@@ -30,6 +31,47 @@ final class LinearWindowController: NSWindowController {
         self.init(window: w)
         self.contentViewController = content
         w.center()
+    }
+}
+
+// Subtle hover-able button used for breadcrumbs
+final class HoverButton: NSButton {
+    private var tracking: NSTrackingArea?
+    private var isHovering = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        isBordered = false
+        bezelStyle = .inline
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        contentTintColor = ColorSchemeToken.textSecondary
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = tracking { removeTrackingArea(t) }
+        tracking = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(tracking!)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+        layer?.backgroundColor = ColorSchemeToken.surface.withAlphaComponent(0.18).cgColor
+        contentTintColor = ColorSchemeToken.textPrimary
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+        layer?.backgroundColor = NSColor.clear.cgColor
+        contentTintColor = ColorSchemeToken.textSecondary
+    }
+
+    override func resetCursorRects() {
+        discardCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 }
 
@@ -172,22 +214,291 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import QuickLookThumbnailing
+import Quartz
 
 // Custom table view that swallows default double-click "open" behavior
 final class DirectoryTableView: NSTableView {
-    override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 2 {
-            // Route to controller explicitly and do not call super to prevent default open
-            if let controller = target as? DirectoryListViewController {
-                controller.handleRowDoubleClick(self)
-                return
+    weak var owner: DirectoryListViewController?
+
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 {
+                if let controller = target as? DirectoryListViewController {
+                    controller.handleRowDoubleClick(self)
+                    return
+                }
             }
+            super.mouseDown(with: event)
         }
-        super.mouseDown(with: event)
+
+        override func menu(for event: NSEvent) -> NSMenu? {
+            let p = convert(event.locationInWindow, from: nil)
+            let r = row(at: p)
+            if r >= 0 {
+                selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
+                return owner?.buildContextMenu(for: IndexSet(integer: r))
+            }
+            return super.menu(for: event)
+        }
+}
+
+// Row view that paints a subtle hover background (Linear-like) when not selected
+final class HoverRowView: NSTableRowView {
+    private var tracking: NSTrackingArea?
+    private var isHovering = false
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = tracking { removeTrackingArea(t) }
+        tracking = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(tracking!)
+    }
+
+    override func mouseEntered(with event: NSEvent) { isHovering = true; needsDisplay = true }
+    override func mouseExited(with event: NSEvent)  { isHovering = false; needsDisplay = true }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        if isSelected {
+            super.drawBackground(in: dirtyRect) // let selection draw
+            return
+        }
+        if isHovering {
+            (ColorSchemeToken.surface.withAlphaComponent(0.12)).setFill()
+            dirtyRect.fill()
+        } else {
+            super.drawBackground(in: dirtyRect)
+        }
     }
 }
 
-final class DirectoryListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+final class DirectoryListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
+    @objc override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
+
+    @objc override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = self
+        panel.delegate = self
+    }
+
+    @objc override func endPreviewPanelControl(_ panel: QLPreviewPanel!) { }
+    
+    // QLPreviewPanelDataSource
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        return quickLookURLs.count
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        guard index >= 0, index < quickLookURLs.count else { return nil }
+        return quickLookURLs[index] as NSURL
+    }
+    // MARK: - Context Menu
+    func tableView(_ tableView: NSTableView, menuForRows rows: IndexSet) -> NSMenu? {
+        return buildContextMenu(for: rows)
+    }
+
+    func buildContextMenu(for rows: IndexSet) -> NSMenu? {
+        if rows.isEmpty { return nil }
+        table.selectRowIndexes(rows, byExtendingSelection: false)
+
+        let menu = NSMenu()
+
+        let openItem = NSMenuItem(title: "Open", action: #selector(ctxOpen), keyEquivalent: "")
+        openItem.target = self
+        menu.addItem(openItem)
+
+        let quickLook = NSMenuItem(title: "Quick Look", action: #selector(ctxQuickLook), keyEquivalent: "")
+        quickLook.target = self
+        menu.addItem(quickLook)
+
+        let openTerm = NSMenuItem(title: "Open in Terminal", action: #selector(ctxOpenInTerminal), keyEquivalent: "")
+        openTerm.target = self
+        menu.addItem(openTerm)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let duplicate = NSMenuItem(title: "Duplicate", action: #selector(ctxDuplicate), keyEquivalent: "")
+        duplicate.target = self
+        menu.addItem(duplicate)
+
+        let compress = NSMenuItem(title: "Compress…", action: #selector(ctxCompress), keyEquivalent: "")
+        compress.target = self
+        menu.addItem(compress)
+
+        let tag = NSMenuItem(title: "Tag…", action: #selector(ctxTag), keyEquivalent: "")
+        tag.target = self
+        menu.addItem(tag)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let copyPath = NSMenuItem(title: "Copy Path", action: #selector(ctxCopyPath), keyEquivalent: "")
+        copyPath.target = self
+        menu.addItem(copyPath)
+
+        let renameItem = NSMenuItem(title: "Rename…", action: #selector(ctxRename), keyEquivalent: "")
+        renameItem.target = self
+        menu.addItem(renameItem)
+
+        let deleteItem = NSMenuItem(title: "Move to Trash", action: #selector(ctxTrash), keyEquivalent: "")
+        deleteItem.target = self
+        menu.addItem(deleteItem)
+
+        return menu
+    }
+
+    // Helper to convert a set of rows into URLs from the active data source
+    private func urls(for rows: IndexSet) -> [URL] {
+        let rowsArray = rows.compactMap { $0 }
+        let dataset = currentRows()
+        return rowsArray.compactMap { idx in
+            guard dataset.indices.contains(idx) else { return nil }
+            return dataset[idx]
+        }
+    }
+    
+    @objc private func ctxQuickLook() {
+        // Build list of URLs from current selection and show the QL panel
+        let selected = urls(for: table.selectedRowIndexes)
+        guard !selected.isEmpty else { NSSound.beep(); return }
+        quickLookURLs = selected
+        QLPreviewPanel.shared()?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: Context actions
+    @objc private func ctxOpen() {
+        let rows = table.selectedRowIndexes
+        let urls = urls(for: rows)
+        guard !urls.isEmpty else { return }
+        if urls.count == 1, let dir = resolvedDirectoryIfAny(for: urls[0]) {
+            navigate(to: dir)
+        } else {
+            // Open files with their default apps; folders navigate within Seeker
+            for u in urls {
+                if resolvedDirectoryIfAny(for: u) != nil { navigate(to: u) }
+                else { NSWorkspace.shared.open(u) }
+            }
+        }
+    }
+    
+    @objc private func ctxDuplicate() {
+        let selected = urls(for: table.selectedRowIndexes)
+        guard !selected.isEmpty else { return }
+        let fm = FileManager.default
+        for src in selected {
+            let base = src.deletingPathExtension().lastPathComponent
+            let ext  = src.pathExtension
+            var i = 2
+            var dest = src.deletingLastPathComponent()
+                .appendingPathComponent("\(base) copy" + (ext.isEmpty ? "" : ".\(ext)"))
+            while fm.fileExists(atPath: dest.path) {
+                dest = src.deletingLastPathComponent()
+                    .appendingPathComponent("\(base) copy \(i)" + (ext.isEmpty ? "" : ".\(ext)"))
+                i += 1
+            }
+            do { try fm.copyItem(at: src, to: dest) } catch { NSSound.beep() }
+        }
+        openDirectory(currentDirectory)
+    }
+
+    @objc private func ctxCompress() {
+        // Zip each selection beside its source
+        let selected = urls(for: table.selectedRowIndexes)
+        guard !selected.isEmpty else { return }
+        for src in selected {
+            let dest = src.deletingLastPathComponent().appendingPathComponent(src.lastPathComponent + ".zip")
+            let task = Process()
+            task.launchPath = "/usr/bin/zip"
+            task.arguments = ["-r", dest.path, src.lastPathComponent]
+            task.currentDirectoryPath = src.deletingLastPathComponent().path
+            try? task.run()
+        }
+    }
+
+    @objc private func ctxTag() {
+        let selected = urls(for: table.selectedRowIndexes)
+        guard !selected.isEmpty else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Add Tags"
+        alert.informativeText = "Enter tags separated by commas."
+        let tf = NSTextField(string: "")
+        tf.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        alert.accessoryView = tf
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Cancel")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let tags = tf.stringValue
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            for url in selected {
+                do {
+                    // Use NSURL setter to avoid SDK cases where URLResourceValues.tagNames is get-only
+                    let finalTags: [String]? = tags.isEmpty ? nil : tags
+                    try (url as NSURL).setResourceValue(finalTags, forKey: .tagNamesKey)
+                } catch {
+                    NSSound.beep()
+                }
+            }
+            openDirectory(currentDirectory)
+        }
+    }
+
+    @objc private func ctxOpenInTerminal() {
+        let rows = table.selectedRowIndexes
+        let urls = urls(for: rows)
+        guard let target = urls.first ?? currentRows().first else { return }
+        let dir = resolvedDirectoryIfAny(for: target) ?? target.deletingLastPathComponent()
+        let task = Process()
+        task.launchPath = "/usr/bin/open"
+        task.arguments = ["-a", "Terminal", dir.path]
+        try? task.run()
+    }
+
+    @objc private func ctxCopyPath() {
+        let rows = table.selectedRowIndexes
+        let paths = urls(for: rows).map { $0.path }
+        guard !paths.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
+    }
+
+    @objc private func ctxRename() {
+        let rows = table.selectedRowIndexes
+        guard rows.count == 1, let url = urls(for: rows).first else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Rename"
+        alert.informativeText = "Enter a new name for \(url.lastPathComponent)."
+        alert.alertStyle = .informational
+        let tf = NSTextField(string: url.lastPathComponent)
+        tf.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        alert.accessoryView = tf
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            let newName = tf.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !newName.isEmpty, newName != url.lastPathComponent else { return }
+            let dest = url.deletingLastPathComponent().appendingPathComponent(newName)
+            do {
+                try FileManager.default.moveItem(at: url, to: dest)
+                // Refresh directory listing
+                openDirectory(currentDirectory)
+            } catch {
+                NSSound.beep()
+            }
+        }
+    }
+
+    @objc private func ctxTrash() {
+        let rows = table.selectedRowIndexes
+        let urls = urls(for: rows)
+        guard !urls.isEmpty else { return }
+        for u in urls {
+            _ = try? FileManager.default.trashItem(at: u, resultingItemURL: nil)
+        }
+        openDirectory(currentDirectory)
+    }
+
+    // MARK: - Context Menu
     // Placeholder for unauthorized locations
     private let placeholder = NSView()
     private let placeholderLabel = NSTextField(labelWithString: "")
@@ -222,6 +533,8 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
 
     // Thumbnail cache
     private var thumbCache = NSCache<NSURL, NSImage>()
+    // Quick Look state
+    private var quickLookURLs: [URL] = []
 
     // State
     private var items: [URL] = []
@@ -376,6 +689,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         table.rowSizeStyle = .medium
         table.allowsMultipleSelection = false
         table.selectionHighlightStyle = .regular
+        table.menu = NSMenu()   // enables contextual menu; our subclass supplies items
 
         scroll.documentView = table
         scroll.hasVerticalScroller = true
@@ -442,6 +756,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         ])
 
         table.target = self
+        (table as? DirectoryTableView)?.owner = self
         updateHomeAccessButtonVisibility()
 
         updatePathLabel()
@@ -638,10 +953,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             }
             parts.append(nextURL)
 
-            let btn = NSButton(title: (i == 0 && c == "/") ? "Macintosh HD" : c, target: self, action: #selector(breadcrumbTapped(_:)))
-            btn.bezelStyle = .inline
-            btn.isBordered = false
-            btn.contentTintColor = ColorSchemeToken.textSecondary
+            let btn = HoverButton(title: (i == 0 && c == "/") ? "Macintosh HD" : c, target: self, action: #selector(breadcrumbTapped(_:)))
             btn.font = FontToken.ui
             btn.setButtonType(.momentaryChange)
             btn.tag = i
@@ -840,14 +1152,13 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             // Navigate inside Seeker, obtaining permission if needed
             navigate(to: dirURL)
         } else {
-            // File (or non-directory target): keep user inside Seeker for now.
-            // Select the row; Quick Look will be wired next.
-            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            // File: open with the default application
+            NSWorkspace.shared.open(url)
         }
     }
 
     override func keyDown(with event: NSEvent) {
-        // Return/Enter opens the selected folder if applicable
+        // Return/Enter opens the selected folder or file
         if event.keyCode == 36 || event.keyCode == 76 { // return or keypad-enter
             let row = table.selectedRow
             let rows = currentRows()
@@ -855,6 +1166,10 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
                 let url = rows[row]
                 if let dirURL = resolvedDirectoryIfAny(for: url) {
                     navigate(to: dirURL)
+                    return
+                } else {
+                    // Open the file with the default application
+                    NSWorkspace.shared.open(url)
                     return
                 }
             }
@@ -973,6 +1288,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         }
     }
 
+    // MARK: - Context Menu
     @objc private func openSelected() {
         let row = table.selectedRow
         let rows = currentRows()
@@ -1077,3 +1393,7 @@ final class FolderAccessManager {
 }
 
 
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        return HoverRowView()
+    }
