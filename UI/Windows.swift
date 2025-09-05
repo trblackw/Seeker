@@ -207,6 +207,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private let pathLabel = NSTextField(labelWithString: "")
     private let crumbBar = NSStackView()
     private let searchField = NSSearchField()
+    private let scopePopUp = NSPopUpButton()
     private let scroll = NSScrollView()
     private let table = DirectoryTableView()
 
@@ -225,6 +226,11 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private var filtered: [URL] = []
     private(set) var currentDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     private var query: String = ""
+    private enum SearchScope { case all, currentFolder }
+    private var searchScope: SearchScope = .all
+    private var isShowingSearchResults = false
+    private var searchResults: [URL] = []
+    private var metadataQuery: NSMetadataQuery?
 
     // Navigation history
     private var backStack: [URL] = []
@@ -234,6 +240,13 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
 
     // Key monitor for ⌘K focus
     private var keyMonitor: Any?
+    
+    @objc private func scopeChanged(_ sender: Any? = nil) {
+        // 0 = All, 1 = Current Folder
+        searchScope = (scopePopUp.indexOfSelectedItem == 0) ? .all : .currentFolder
+        // Re-run current search to reflect new scope
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    }
 
     override func loadView() {
         self.view = NSView()
@@ -273,16 +286,28 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         searchField.layer?.backgroundColor = ColorSchemeToken.surface.cgColor
         searchField.delegate = self
         header.addSubview(searchField)
+    
+        // Scope selector (left of the search field)
+        scopePopUp.addItems(withTitles: ["All", "Current Folder"])
+        scopePopUp.target = self
+        scopePopUp.action = #selector(scopeChanged)
+        scopePopUp.font = FontToken.ui
+        scopePopUp.bezelStyle = .rounded
+        header.addSubview(scopePopUp)
 
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
         pathLabel.isHidden = true // breadcrumb bar supersedes the raw path text
 
         crumbBar.translatesAutoresizingMaskIntoConstraints = false
         searchField.translatesAutoresizingMaskIntoConstraints = false
+        scopePopUp.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             crumbBar.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: TZ.x4),
             crumbBar.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            crumbBar.trailingAnchor.constraint(lessThanOrEqualTo: searchField.leadingAnchor, constant: -TZ.x4),
+            crumbBar.trailingAnchor.constraint(lessThanOrEqualTo: scopePopUp.leadingAnchor, constant: -TZ.x4),
+
+            scopePopUp.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            scopePopUp.trailingAnchor.constraint(equalTo: searchField.leadingAnchor, constant: -TZ.x3),
 
             searchField.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -TZ.x4),
             searchField.centerYAnchor.constraint(equalTo: header.centerYAnchor),
