@@ -710,6 +710,25 @@ final class HoverRowView: NSTableRowView {
     }
 }
 
+enum ViewMode {
+    case list
+    case tree
+}
+
+struct TreeNode {
+    let item: DirectoryItem
+    let depth: Int
+    let isExpanded: Bool
+    let hasChildren: Bool
+    
+    init(item: DirectoryItem, depth: Int = 0, isExpanded: Bool = false, hasChildren: Bool = false) {
+        self.item = item
+        self.depth = depth
+        self.isExpanded = isExpanded
+        self.hasChildren = hasChildren
+    }
+}
+
 final class DirectoryListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     @objc override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
 
@@ -849,24 +868,44 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     // Helper to convert a set of rows into URLs from the active data source
     private func urls(for rows: IndexSet) -> [URL] {
         let rowsArray = rows.compactMap { $0 }
-        let items = currentDirectoryItems()
-        return rowsArray.compactMap { idx in
-            guard items.indices.contains(idx) else { return nil }
-            let item = items[idx]
-            
-            // For groups, we can't return a file URL, so we skip them in URL-based operations
-            if item is GroupItem { return nil }
-            return item.url
+        
+        if currentViewMode == .tree {
+            return rowsArray.compactMap { idx in
+                guard treeNodes.indices.contains(idx) else { return nil }
+                let item = treeNodes[idx].item
+                
+                // For groups, we can't return a file URL, so we skip them in URL-based operations
+                if item is GroupItem { return nil }
+                return item.url
+            }
+        } else {
+            let items = currentDirectoryItems()
+            return rowsArray.compactMap { idx in
+                guard items.indices.contains(idx) else { return nil }
+                let item = items[idx]
+                
+                // For groups, we can't return a file URL, so we skip them in URL-based operations
+                if item is GroupItem { return nil }
+                return item.url
+            }
         }
     }
     
     // Helper to get directory items from row indices
     func directoryItems(for rows: IndexSet) -> [DirectoryItem] {
         let rowsArray = rows.compactMap { $0 }
-        let items = currentDirectoryItems()
-        return rowsArray.compactMap { idx in
-            guard items.indices.contains(idx) else { return nil }
-            return items[idx]
+        
+        if currentViewMode == .tree {
+            return rowsArray.compactMap { idx in
+                guard treeNodes.indices.contains(idx) else { return nil }
+                return treeNodes[idx].item
+            }
+        } else {
+            let items = currentDirectoryItems()
+            return rowsArray.compactMap { idx in
+                guard items.indices.contains(idx) else { return nil }
+                return items[idx]
+            }
         }
     }
     
@@ -1183,7 +1222,14 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private let crumbBar = NSStackView()
     private let searchField = NSSearchField()
     private let scopePopUp = NSPopUpButton()
+    private let viewModeControl = NSSegmentedControl()
     private let grantHomeButton = NSButton(title: "Grant Home", target: nil, action: nil)
+    
+    // View mode state
+    private var currentViewMode: ViewMode = .list
+    private var treeNodes: [TreeNode] = []
+    private var expandedFolders: Set<URL> = []
+    private var expandedGroups: Set<String> = []
     private let scroll = NSScrollView()
     let table = DirectoryTableView()
 
@@ -1266,6 +1312,160 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
     }
     
+    @objc private func viewModeChanged() {
+        currentViewMode = viewModeControl.selectedSegment == 0 ? .list : .tree
+        if currentViewMode == .tree {
+            // Auto-expand first few folders for demonstration
+            autoExpandInitialFolders()
+            buildTreeNodes()
+        }
+        table.reloadData()
+    }
+    
+    private func autoExpandInitialFolders() {
+        let items = isShowingSearchResults ? searchResults.compactMap { try? FileSystemItem(url: $0) } : filteredDirectoryItems
+        
+        // Auto-expand first few folders/groups to show tree structure
+        autoExpandItems(items, maxItems: 3, currentDepth: 0, maxDepth: 5)
+    }
+    
+    private func autoExpandItems(_ items: [DirectoryItem], maxItems: Int, currentDepth: Int, maxDepth: Int) {
+        guard currentDepth <= maxDepth else { return }
+        
+        var expandCount = 0
+        for item in items {
+            if expandCount >= maxItems { break }
+            
+            if let groupItem = item as? GroupItem {
+                if !expandedGroups.contains(groupItem.name) {
+                    expandedGroups.insert(groupItem.name)
+                    expandCount += 1
+                    
+                    // Recursively expand children
+                    let children = getChildItems(for: item)
+                    autoExpandItems(children, maxItems: 2, currentDepth: currentDepth + 1, maxDepth: maxDepth)
+                }
+            } else if itemHasChildren(item) {
+                if !expandedFolders.contains(item.url) {
+                    expandedFolders.insert(item.url)
+                    expandCount += 1
+                    
+                    // Recursively expand children
+                    let children = getChildItems(for: item)
+                    autoExpandItems(children, maxItems: 2, currentDepth: currentDepth + 1, maxDepth: maxDepth)
+                }
+            }
+        }
+    }
+    
+    private func buildTreeNodes() {
+        treeNodes = []
+        let items: [DirectoryItem]
+        if isShowingSearchResults {
+            items = searchResults.compactMap { try? FileSystemItem(url: $0) }
+        } else {
+            items = filteredDirectoryItems
+        }
+        
+        for item in items {
+            let node = TreeNode(item: item, depth: 0, isExpanded: isItemExpanded(item), hasChildren: itemHasChildren(item))
+            treeNodes.append(node)
+            
+            // Add children if expanded
+            if node.isExpanded && node.hasChildren {
+                addChildNodes(for: item, depth: 1)
+            }
+        }
+    }
+    
+    private func addChildNodes(for item: DirectoryItem, depth: Int) {
+        let children = getChildItems(for: item)
+        for child in children {
+            let node = TreeNode(item: child, depth: depth, isExpanded: isItemExpanded(child), hasChildren: itemHasChildren(child))
+            treeNodes.append(node)
+            
+            if node.isExpanded && node.hasChildren {
+                addChildNodes(for: child, depth: depth + 1)
+            }
+        }
+    }
+    
+    private func isItemExpanded(_ item: DirectoryItem) -> Bool {
+        if let groupItem = item as? GroupItem {
+            return expandedGroups.contains(groupItem.name)
+        } else {
+            return expandedFolders.contains(item.url)
+        }
+    }
+    
+    private func itemHasChildren(_ item: DirectoryItem) -> Bool {
+        if let groupItem = item as? GroupItem {
+            return !groupItem.group.items.isEmpty
+        } else {
+            let url = item.url
+            // First check if it's a directory
+            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else {
+                return false
+            }
+            // Then check if it actually contains any items
+            guard let contents = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+                return false
+            }
+            return !contents.isEmpty
+        }
+    }
+    
+    private func getChildItems(for item: DirectoryItem) -> [DirectoryItem] {
+        if let groupItem = item as? GroupItem {
+            return groupItem.group.items.compactMap { try? FileSystemItem(url: $0) }
+        } else {
+            let url = item.url
+            guard let contents = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
+                return []
+            }
+            return contents.compactMap { try? FileSystemItem(url: $0) }
+        }
+    }
+    
+    private func toggleTreeNodeExpansion(for item: DirectoryItem) {
+        if let groupItem = item as? GroupItem {
+            if expandedGroups.contains(groupItem.name) {
+                expandedGroups.remove(groupItem.name)
+            } else {
+                expandedGroups.insert(groupItem.name)
+            }
+        } else {
+            if expandedFolders.contains(item.url) {
+                expandedFolders.remove(item.url)
+            } else {
+                expandedFolders.insert(item.url)
+            }
+        }
+        
+        // Rebuild tree nodes and reload table
+        buildTreeNodes()
+        table.reloadData()
+    }
+    
+    private func toggleNodeExpansion(for cell: DirectoryCellView) {
+        // Find the item corresponding to this cell
+        let index = table.row(for: cell)
+        guard index >= 0, 
+              index < treeNodes.count else { return }
+        
+        let node = treeNodes[index]
+        toggleTreeNodeExpansion(for: node.item)
+    }
+    
+    private func openItem(_ item: DirectoryItem) {
+        if let groupItem = item as? GroupItem {
+            showGroupContents(groupItem.group)
+        } else {
+            let url = item.url
+            NSWorkspace.shared.open(url)
+        }
+    }
+    
     @objc private func grantHomeAccessTapped() {
         FolderAccessManager.shared.requestAccess(for: homeURL) { [weak self] granted in
             guard let self = self else { return }
@@ -1327,6 +1527,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         searchField.action = #selector(searchFieldChanged(_:))
         searchField.sendsSearchStringImmediately = true
         searchField.sendsWholeSearchString = false
+        searchField.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(searchField)
 
         // Scope selector (left of the search field)
@@ -1335,22 +1536,36 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         scopePopUp.action = #selector(scopeChanged)
         scopePopUp.font = FontToken.ui
         scopePopUp.bezelStyle = .inline
+        scopePopUp.setContentHuggingPriority(.required, for: .horizontal)
+        scopePopUp.setContentCompressionResistancePriority(.required, for: .horizontal)
+        scopePopUp.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(scopePopUp)
+        
+        // View mode toggle
+        viewModeControl.segmentCount = 2
+        viewModeControl.setImage(NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "List View"), forSegment: 0)
+        viewModeControl.setImage(NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "Tree View"), forSegment: 1)
+        viewModeControl.selectedSegment = 0
+        viewModeControl.target = self
+        viewModeControl.action = #selector(viewModeChanged)
+        viewModeControl.font = FontToken.ui
+        viewModeControl.setContentHuggingPriority(.required, for: .horizontal)
+        viewModeControl.setContentCompressionResistancePriority(.required, for: .horizontal)
+        viewModeControl.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(viewModeControl)
 
         // One-click Home access (for sandboxed global search)
         grantHomeButton.target = self
         grantHomeButton.action = #selector(grantHomeAccessTapped)
         grantHomeButton.bezelStyle = .inline
         grantHomeButton.font = FontToken.ui
+        grantHomeButton.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(grantHomeButton)
 
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
         pathLabel.isHidden = true // breadcrumb bar supersedes the raw path text
 
         crumbBar.translatesAutoresizingMaskIntoConstraints = false
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-        scopePopUp.translatesAutoresizingMaskIntoConstraints = false
-        grantHomeButton.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             navigationContainer.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: TZ.x4),
             navigationContainer.centerYAnchor.constraint(equalTo: header.centerYAnchor),
@@ -1363,7 +1578,10 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             grantHomeButton.trailingAnchor.constraint(equalTo: scopePopUp.leadingAnchor, constant: -TZ.x3),
 
             scopePopUp.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            scopePopUp.trailingAnchor.constraint(equalTo: searchField.leadingAnchor, constant: -TZ.x3),
+            scopePopUp.trailingAnchor.constraint(equalTo: viewModeControl.leadingAnchor, constant: -TZ.x3),
+            
+            viewModeControl.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            viewModeControl.trailingAnchor.constraint(equalTo: searchField.leadingAnchor, constant: -TZ.x3),
 
             searchField.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -TZ.x4),
             searchField.centerYAnchor.constraint(equalTo: header.centerYAnchor),
@@ -1980,29 +2198,90 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
+        if currentViewMode == .tree {
+            return treeNodes.count
+        }
         return isShowingSearchResults ? searchResults.count : filteredDirectoryItems.count
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
-        let rows = currentRows()
-        guard row >= 0, rows.indices.contains(row) else {
-            preview.isHidden = true
-            return
+        
+        if currentViewMode == .tree {
+            guard row >= 0, row < treeNodes.count else {
+                preview.isHidden = true
+                return
+            }
+            preview.isHidden = false
+            let node = treeNodes[row]
+            updatePreview(for: node.item.url)
+        } else {
+            let rows = currentRows()
+            guard row >= 0, rows.indices.contains(row) else {
+                preview.isHidden = true
+                return
+            }
+            preview.isHidden = false
+            let url = rows[row]
+            updatePreview(for: url)
         }
-        preview.isHidden = false
-        let url = rows[row]
-        updatePreview(for: url)
     }
 
 
     private final class DirectoryCellView: NSTableCellView {
         let iconView = NSImageView()
         let nameField = NSTextField(labelWithString: "")
+        private let indentGuideView = NSView()
+        private let disclosureTriangle = NSImageView()
+        
+        var treeDepth: Int = 0 {
+            didSet { updateIndentation() }
+        }
+        
+        var showIndentGuide: Bool = false {
+            didSet { updateIndentGuide() }
+        }
+        
+        var hasChildren: Bool = false {
+            didSet { updateDisclosureTriangle() }
+        }
+        
+        var isExpanded: Bool = false {
+            didSet { updateDisclosureTriangle() }
+        }
+        
+        var isInTreeMode: Bool = false {
+            didSet { updateDisclosureTriangle() }
+        }
+        
+        weak var windowController: DirectoryListViewController?
+        
+        private var leadingConstraint: NSLayoutConstraint!
+        private var guideLeadingConstraint: NSLayoutConstraint!
+        private var triangleLeadingConstraint: NSLayoutConstraint!
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
             identifier = NSUserInterfaceItemIdentifier("cell")
+            
+            // Indent guide setup
+            indentGuideView.wantsLayer = true
+            indentGuideView.layer?.backgroundColor = ColorSchemeToken.accent.withAlphaComponent(0.3).cgColor
+            indentGuideView.isHidden = true
+            addSubview(indentGuideView)
+            
+            // Disclosure triangle setup
+            disclosureTriangle.translatesAutoresizingMaskIntoConstraints = false
+            disclosureTriangle.imageScaling = .scaleProportionallyUpOrDown
+            disclosureTriangle.symbolConfiguration = .init(pointSize: 10, weight: .medium)
+            disclosureTriangle.isHidden = true
+            
+            // Add click handling for disclosure triangle
+            let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(triangleClicked))
+            disclosureTriangle.addGestureRecognizer(clickGesture)
+            
+            addSubview(disclosureTriangle)
+            
             iconView.translatesAutoresizingMaskIntoConstraints = false
             iconView.imageScaling = .scaleProportionallyUpOrDown
             iconView.symbolConfiguration = .init(pointSize: 14, weight: .regular)
@@ -2012,46 +2291,133 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             nameField.font = FontToken.ui
             nameField.textColor = ColorSchemeToken.textPrimary
             addSubview(nameField)
+            
+            indentGuideView.translatesAutoresizingMaskIntoConstraints = false
+            leadingConstraint = iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: TZ.x6)
+            guideLeadingConstraint = indentGuideView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: TZ.x6)
+            triangleLeadingConstraint = disclosureTriangle.leadingAnchor.constraint(equalTo: leadingAnchor, constant: TZ.x6 - 16)
 
             NSLayoutConstraint.activate([
-                iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: TZ.x6),
+                leadingConstraint,
                 iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
                 iconView.widthAnchor.constraint(equalToConstant: 16),
                 iconView.heightAnchor.constraint(equalToConstant: 16),
 
                 nameField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: TZ.x3),
                 nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -TZ.x4),
-                nameField.centerYAnchor.constraint(equalTo: centerYAnchor)
+                nameField.centerYAnchor.constraint(equalTo: centerYAnchor),
+                
+                // Disclosure triangle constraints
+                triangleLeadingConstraint,
+                disclosureTriangle.centerYAnchor.constraint(equalTo: centerYAnchor),
+                disclosureTriangle.widthAnchor.constraint(equalToConstant: 12),
+                disclosureTriangle.heightAnchor.constraint(equalToConstant: 12),
+                
+                // Indent guide constraints
+                guideLeadingConstraint,
+                indentGuideView.topAnchor.constraint(equalTo: topAnchor),
+                indentGuideView.bottomAnchor.constraint(equalTo: bottomAnchor),
+                indentGuideView.widthAnchor.constraint(equalToConstant: 1)
             ])
             self.textField = nameField
             self.imageView = iconView
         }
 
         required init?(coder: NSCoder) { fatalError() }
+        
+        private func updateIndentation() {
+            let indentAmount = CGFloat(treeDepth * 20) // 20pt per level
+            leadingConstraint.constant = TZ.x6 + indentAmount
+            triangleLeadingConstraint.constant = TZ.x6 + indentAmount - 16
+        }
+        
+        private func updateIndentGuide() {
+            indentGuideView.isHidden = !showIndentGuide || treeDepth == 0
+            if showIndentGuide && treeDepth > 0 {
+                // Update the guide position for current depth
+                guideLeadingConstraint.constant = TZ.x6 + CGFloat((treeDepth - 1) * 20) + 8
+            } else {
+                guideLeadingConstraint.constant = TZ.x6
+            }
+        }
+        
+        private func updateDisclosureTriangle() {
+            // Show triangle for all nodes in tree mode
+            disclosureTriangle.isHidden = !isInTreeMode
+            if isInTreeMode {
+                let triangleName = isExpanded ? "chevron.down" : "chevron.right"
+                disclosureTriangle.image = NSImage(systemSymbolName: triangleName, accessibilityDescription: isExpanded ? "Collapse" : "Expand")
+                disclosureTriangle.contentTintColor = ColorSchemeToken.textSecondary
+            }
+        }
+        
+        @objc private func triangleClicked() {
+            windowController?.toggleNodeExpansion(for: self)
+        }
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("cell")
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? DirectoryCellView ?? DirectoryCellView()
         
-        let items = currentDirectoryItems()
-        guard row < items.count else { return cell }
-        let item = items[row]
-        
-        if let groupItem = item as? GroupItem {
-            // Display group with special styling
-            cell.nameField.stringValue = groupItem.name
-            cell.iconView.image = NSImage(systemSymbolName: "folder.badge.gearshape", accessibilityDescription: "Group")
-            cell.nameField.textColor = ColorSchemeToken.accent // Highlight groups with accent color
-            cell.toolTip = "Group containing \(groupItem.group.items.count) items"
+        if currentViewMode == .tree {
+            // Tree mode - use tree nodes
+            guard row < treeNodes.count else { return cell }
+            let node = treeNodes[row]
+            let item = node.item
+            
+            // Set tree properties
+            cell.treeDepth = node.depth
+            cell.showIndentGuide = node.depth > 0
+            cell.hasChildren = node.hasChildren
+            cell.isExpanded = node.isExpanded
+            cell.isInTreeMode = true
+            cell.windowController = self
+            
+            if let groupItem = item as? GroupItem {
+                // Display group with special styling
+                cell.nameField.stringValue = groupItem.name
+                cell.iconView.image = NSImage(systemSymbolName: "folder.badge.gearshape", accessibilityDescription: "Group")
+                cell.nameField.textColor = ColorSchemeToken.accent
+                cell.toolTip = "Group containing \(groupItem.group.items.count) items"
+            } else {
+                // Display regular file/folder
+                let url = item.url
+                let kind = itemKind(for: url)
+                cell.nameField.stringValue = displayName(for: url)
+                cell.iconView.image = iconForList(url: url, kind: kind)
+                cell.nameField.textColor = ColorSchemeToken.textPrimary
+                cell.toolTip = url.path
+            }
         } else {
-            // Display regular file/folder
-            let url = item.url
-            let kind = itemKind(for: url)
-            cell.nameField.stringValue = displayName(for: url)
-            cell.iconView.image = iconForList(url: url, kind: kind)
-            cell.nameField.textColor = ColorSchemeToken.textPrimary
-            cell.toolTip = url.path
+            // List mode - existing logic
+            let items = currentDirectoryItems()
+            guard row < items.count else { return cell }
+            let item = items[row]
+            
+            // Reset tree properties for list mode
+            cell.treeDepth = 0
+            cell.showIndentGuide = false
+            cell.hasChildren = false
+            cell.isExpanded = false
+            cell.isInTreeMode = false
+            cell.windowController = nil
+            
+            if let groupItem = item as? GroupItem {
+                // Display group with special styling
+                cell.nameField.stringValue = groupItem.name
+                cell.iconView.image = NSImage(systemSymbolName: "folder.badge.gearshape", accessibilityDescription: "Group")
+                cell.nameField.textColor = ColorSchemeToken.accent
+                cell.toolTip = "Group containing \(groupItem.group.items.count) items"
+            } else {
+                // Display regular file/folder
+                let url = item.url
+                let kind = itemKind(for: url)
+                cell.nameField.stringValue = displayName(for: url)
+                cell.iconView.image = iconForList(url: url, kind: kind)
+                cell.nameField.textColor = ColorSchemeToken.textPrimary
+                cell.toolTip = url.path
+            }
         }
         
         return cell
@@ -2059,21 +2425,39 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
 
     @objc func handleRowDoubleClick(_ sender: Any) {
         let row = table.clickedRow
-        let items = currentDirectoryItems()
-        guard row >= 0, items.indices.contains(row) else { return }
-        let item = items[row]
         
-        if let groupItem = item as? GroupItem {
-            // Navigate into group (show group contents)
-            showGroupContents(groupItem.group)
+        if currentViewMode == .tree {
+            // In tree mode, double-click expands/collapses folders and groups
+            guard row >= 0, row < treeNodes.count else { return }
+            let node = treeNodes[row]
+            
+            if node.hasChildren {
+                toggleTreeNodeExpansion(for: node.item)
+                return
+            }
+            
+            // If it's a file, open it
+            if !node.hasChildren {
+                openItem(node.item)
+            }
         } else {
-            let url = item.url
-            if let dirURL = resolvedDirectoryIfAny(for: url) {
-                // Navigate inside Seeker, obtaining permission if needed
-                navigate(to: dirURL)
+            // List mode - existing logic
+            let items = currentDirectoryItems()
+            guard row >= 0, items.indices.contains(row) else { return }
+            let item = items[row]
+            
+            if let groupItem = item as? GroupItem {
+                // Navigate into group (show group contents)
+                showGroupContents(groupItem.group)
             } else {
-                // File: open with the default application
-                NSWorkspace.shared.open(url)
+                let url = item.url
+                if let dirURL = resolvedDirectoryIfAny(for: url) {
+                    // Navigate inside Seeker, obtaining permission if needed
+                    navigate(to: dirURL)
+                } else {
+                    // File: open with the default application
+                    NSWorkspace.shared.open(url)
+                }
             }
         }
     }
