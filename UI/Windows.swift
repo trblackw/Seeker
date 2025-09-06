@@ -620,6 +620,24 @@ struct GroupItem: DirectoryItem {
     }
 }
 
+// Custom navigation button that handles right-click for history menu
+final class NavigationButton: NSButton {
+    var onRightClick: (() -> Void)?
+    
+    override func mouseDown(with event: NSEvent) {
+        if event.type == .rightMouseDown {
+            onRightClick?()
+        } else {
+            super.mouseDown(with: event)
+        }
+    }
+    
+    override func rightMouseDown(with event: NSEvent) {
+        print("NavigationButton: Right mouse down detected")
+        onRightClick?()
+    }
+}
+
 // Custom table view that swallows default double-click "open" behavior
 final class DirectoryTableView: NSTableView {
     weak var owner: DirectoryListViewController?
@@ -1158,6 +1176,9 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
 
     // UI
     private let header = NSView()
+    private let navigationContainer = NSStackView()
+    private let backButton = NavigationButton()
+    private let forwardButton = NSButton()
     private let pathLabel = NSTextField(labelWithString: "")
     private let crumbBar = NSStackView()
     private let searchField = NSSearchField()
@@ -1211,8 +1232,27 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     // Navigation history
-    private var backStack: [URL] = []
-    private var forwardStack: [URL] = []
+    enum NavigationEntry {
+        case directory(URL)
+        case group(SeekerGroup, parentDirectory: URL)
+        
+        var displayName: String {
+            switch self {
+            case .directory(let url):
+                return url.lastPathComponent
+            case .group(let group, _):
+                return group.name
+            }
+        }
+        
+        var isGroup: Bool {
+            if case .group = self { return true }
+            return false
+        }
+    }
+    
+    private var backStack: [NavigationEntry] = []
+    private var forwardStack: [NavigationEntry] = []
     private var crumbURLs: [URL] = []
     private var suppressHistoryPush = false
 
@@ -1259,6 +1299,9 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             header.topAnchor.constraint(equalTo: view.topAnchor),
             header.heightAnchor.constraint(equalToConstant: 44)
         ])
+        
+        // Navigation buttons
+        setupNavigationButtons()
 
         pathLabel.font = FontToken.uiMedium
         pathLabel.textColor = ColorSchemeToken.textSecondary
@@ -1309,7 +1352,10 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         scopePopUp.translatesAutoresizingMaskIntoConstraints = false
         grantHomeButton.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            crumbBar.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: TZ.x4),
+            navigationContainer.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: TZ.x4),
+            navigationContainer.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            
+            crumbBar.leadingAnchor.constraint(equalTo: navigationContainer.trailingAnchor, constant: TZ.x3),
             crumbBar.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             crumbBar.trailingAnchor.constraint(lessThanOrEqualTo: grantHomeButton.leadingAnchor, constant: -TZ.x4),
 
@@ -1406,6 +1452,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         table.target = self
         table.owner = self
         updateHomeAccessButtonVisibility()
+        updateNavigationButtons()
 
         updatePathLabel()
         // Placeholder overlay (hidden by default)
@@ -1640,6 +1687,169 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         // Use the same flow as the sidebar – either navigate immediately or show grant-access UI
         selectTarget(crumbURLs[idx])
     }
+    
+    private func setupNavigationButtons() {
+        // Configure back button
+        backButton.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back")
+        backButton.isBordered = false
+        backButton.bezelStyle = .inline
+        backButton.target = self
+        backButton.action = #selector(backButtonClicked)
+        backButton.wantsLayer = true
+        backButton.layer?.cornerRadius = 6
+        
+        // Set up right-click handler for history menu
+        backButton.onRightClick = { [weak self] in
+            self?.showBackHistoryMenu(for: self?.backButton)
+        }
+        
+        // Configure forward button  
+        forwardButton.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Forward")
+        forwardButton.isBordered = false
+        forwardButton.bezelStyle = .inline
+        forwardButton.target = self
+        forwardButton.action = #selector(forwardButtonClicked)
+        forwardButton.wantsLayer = true
+        forwardButton.layer?.cornerRadius = 6
+        
+        // Setup navigation container
+        navigationContainer.orientation = .horizontal
+        navigationContainer.alignment = .centerY
+        navigationContainer.spacing = 2
+        navigationContainer.addArrangedSubview(backButton)
+        navigationContainer.addArrangedSubview(forwardButton)
+        
+        header.addSubview(navigationContainer)
+        navigationContainer.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Set button sizes
+        NSLayoutConstraint.activate([
+            backButton.widthAnchor.constraint(equalToConstant: 28),
+            backButton.heightAnchor.constraint(equalToConstant: 28),
+            forwardButton.widthAnchor.constraint(equalToConstant: 28),
+            forwardButton.heightAnchor.constraint(equalToConstant: 28)
+        ])
+    }
+    
+    private func updateNavigationButtons() {
+        backButton.isEnabled = !backStack.isEmpty
+        forwardButton.isEnabled = !forwardStack.isEmpty
+        
+        // Style enabled/disabled states
+        backButton.contentTintColor = backStack.isEmpty ? ColorSchemeToken.textSecondary : ColorSchemeToken.textPrimary
+        forwardButton.contentTintColor = forwardStack.isEmpty ? ColorSchemeToken.textSecondary : ColorSchemeToken.textPrimary
+    }
+    
+    @objc private func backButtonClicked() {
+        goBackOne()
+    }
+    
+    @objc private func forwardButtonClicked() {
+        goForwardOne()
+    }
+    
+    private func showBackHistoryMenu(for button: NSButton?) {
+        print("showBackHistoryMenu called, backStack.count: \(backStack.count)")
+        guard let button = button, !backStack.isEmpty else { 
+            print("showBackHistoryMenu: early return - button is nil or backStack is empty")
+            return 
+        }
+        
+        let menu = NSMenu()
+        
+        // Add recent history items (up to 5)
+        let recentHistory = Array(backStack.suffix(5).reversed())
+        
+        for (index, entry) in recentHistory.enumerated() {
+            let menuItem = NSMenuItem(title: entry.displayName, action: #selector(navigateToHistoryEntry(_:)), keyEquivalent: "")
+            menuItem.target = self
+            menuItem.tag = backStack.count - index - 1 // Convert to backStack index
+            
+            // Add icon for groups vs directories
+            if entry.isGroup {
+                menuItem.image = NSImage(systemSymbolName: "folder.badge.gearshape", accessibilityDescription: "Group")
+            } else {
+                menuItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "Folder")
+            }
+            
+            menu.addItem(menuItem)
+        }
+        
+        // Show menu below the back button
+        print("showBackHistoryMenu: showing menu with \(menu.items.count) items")
+        let menuLocation = NSPoint(x: 0, y: button.bounds.height)
+        menu.popUp(positioning: menu.items.first, at: menuLocation, in: button)
+    }
+    
+    @objc private func navigateToHistoryEntry(_ sender: NSMenuItem) {
+        let targetIndex = sender.tag
+        guard targetIndex >= 0 && targetIndex < backStack.count else { return }
+        
+        // Move all entries after the target to forward stack
+        let itemsToMoveToForward = Array(backStack.suffix(backStack.count - targetIndex - 1))
+        forwardStack = itemsToMoveToForward + forwardStack
+        
+        // Remove items from back stack up to and including target
+        let targetEntry = backStack[targetIndex]
+        backStack.removeLast(backStack.count - targetIndex)
+        
+        // Navigate to the selected entry
+        navigateToEntry(targetEntry)
+    }
+    
+    private func navigateToEntry(_ entry: NavigationEntry) {
+        suppressHistoryPush = true
+        defer { suppressHistoryPush = false }
+        
+        switch entry {
+        case .directory(let url):
+            if isShowingGroupContents {
+                exitGroupView()
+            }
+            openDirectory(url)
+        case .group(let group, let parentDir):
+            currentDirectory = parentDir
+            showGroupContents(group)
+        }
+        
+        updateNavigationButtons()
+    }
+    
+    private func goBackOne() {
+        guard !backStack.isEmpty else { return }
+        
+        let previousEntry = backStack.removeLast()
+        
+        // Add current state to forward stack
+        let currentEntry: NavigationEntry
+        if isShowingGroupContents, let group = currentGroup {
+            currentEntry = .group(group, parentDirectory: currentDirectory)
+        } else {
+            currentEntry = .directory(currentDirectory)
+        }
+        forwardStack.insert(currentEntry, at: 0)
+        
+        // Navigate to previous entry
+        navigateToEntry(previousEntry)
+    }
+    
+    private func goForwardOne() {
+        guard !forwardStack.isEmpty else { return }
+        
+        let nextEntry = forwardStack.removeFirst()
+        
+        // Add current state to back stack
+        let currentEntry: NavigationEntry
+        if isShowingGroupContents, let group = currentGroup {
+            currentEntry = .group(group, parentDirectory: currentDirectory)
+        } else {
+            currentEntry = .directory(currentDirectory)
+        }
+        backStack.append(currentEntry)
+        
+        // Navigate to next entry
+        navigateToEntry(nextEntry)
+    }
 
     private func updatePathLabel() {
         if isShowingGroupContents, let group = currentGroup {
@@ -1652,9 +1862,22 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
 
     func openDirectory(_ url: URL) {
         if url != currentDirectory && !suppressHistoryPush {
-            backStack.append(currentDirectory)
+            let currentEntry: NavigationEntry
+            if isShowingGroupContents, let group = currentGroup {
+                currentEntry = .group(group, parentDirectory: currentDirectory)
+            } else {
+                currentEntry = .directory(currentDirectory)
+            }
+            backStack.append(currentEntry)
             forwardStack.removeAll()
         }
+        
+        // Exit group view if we were in one
+        if isShowingGroupContents {
+            isShowingGroupContents = false
+            currentGroup = nil
+        }
+        
         currentDirectory = url
         updatePathLabel()
         
@@ -1713,6 +1936,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         table.deselectAll(nil)
         preview.isHidden = true
         table.reloadData()
+        updateNavigationButtons()
     }
     
     private func currentRows() -> [URL] {
@@ -1739,25 +1963,13 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     func goBack() {
-        // If we're in a group, exit group view first
-        if isShowingGroupContents {
-            exitGroupView()
-            return
-        }
-        
-        guard let prev = backStack.popLast() else { NSSound.beep(); return }
-        suppressHistoryPush = true
-        forwardStack.append(currentDirectory)
-        openDirectory(prev)
-        suppressHistoryPush = false
+        // Use the new navigation system
+        goBackOne()
     }
 
     func goForward() {
-        guard let next = forwardStack.popLast() else { NSSound.beep(); return }
-        suppressHistoryPush = true
-        backStack.append(currentDirectory)
-        openDirectory(next)
-        suppressHistoryPush = false
+        // Use the new navigation system
+        goForwardOne()
     }
 
     func openTerminalHere() {
@@ -1912,9 +2124,12 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         // Add to navigation history but don't change currentDirectory
         // Groups are a virtual navigation layer
         if !suppressHistoryPush {
-            backStack.append(currentDirectory)
+            let currentEntry: NavigationEntry = .directory(currentDirectory)
+            backStack.append(currentEntry)
             forwardStack.removeAll()
         }
+        
+        updateNavigationButtons()
         
         print("Showing group '\(validatedGroup.name)' with \(validatedGroup.items.count) items")
         print("Directory items created: \(allDirectoryItems.count)")
@@ -1930,6 +2145,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         suppressHistoryPush = true
         openDirectory(currentDirectory)
         suppressHistoryPush = false
+        updateNavigationButtons()
     }
     
     func createGroupFromSelection() {
