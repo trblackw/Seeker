@@ -44,7 +44,7 @@ final class HoverButton: NSButton {
         isBordered = false
         bezelStyle = .inline
         wantsLayer = true
-        layer?.cornerRadius = 6
+        layer?.cornerRadius = 3
         contentTintColor = ColorSchemeToken.textSecondary
     }
 
@@ -115,7 +115,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         col.width = 200
         table.addTableColumn(col)
         table.headerView = nil
-        table.rowSizeStyle = .medium
+        table.rowSizeStyle = .small
         table.allowsMultipleSelection = false // Disable multiselection for sidebar
         if #available(macOS 11.0, *) {
             table.style = .sourceList
@@ -205,9 +205,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
                 c.addSubview(tf)
                 tf.translatesAutoresizingMaskIntoConstraints = false
                 NSLayoutConstraint.activate([
-                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 16),
+                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: TZ.x4),
                     tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
-                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -16)
+                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -TZ.x4)
                 ])
                 return c
             }()
@@ -226,9 +226,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
                 c.addSubview(tf)
                 tf.translatesAutoresizingMaskIntoConstraints = false
                 NSLayoutConstraint.activate([
-                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 24),
+                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: TZ.x6),
                     tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
-                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -16)
+                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -TZ.x4)
                 ])
                 return c
             }()
@@ -247,9 +247,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
                 c.addSubview(tf)
                 tf.translatesAutoresizingMaskIntoConstraints = false
                 NSLayoutConstraint.activate([
-                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 24),
+                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: TZ.x6),
                     tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
-                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -16)
+                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -TZ.x4)
                 ])
                 return c
             }()
@@ -337,7 +337,7 @@ final class SeekerRootViewController: NSSplitViewController, SidebarSelectionDel
         
         NSLayoutConstraint.activate([
             commandPalette.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            commandPalette.topAnchor.constraint(equalTo: view.topAnchor, constant: 80),
+            commandPalette.topAnchor.constraint(equalTo: view.topAnchor, constant: TZ.x16),
             commandPalette.widthAnchor.constraint(equalToConstant: 600),
             commandPalette.heightAnchor.constraint(equalToConstant: 400)
         ])
@@ -1320,7 +1320,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         searchField.focusRingType = .none
         searchField.bezelStyle = .roundedBezel
         searchField.wantsLayer = true
-        searchField.layer?.cornerRadius = 8
+        searchField.layer?.cornerRadius = 4
         searchField.layer?.backgroundColor = ColorSchemeToken.surface.cgColor
         searchField.delegate = self
         searchField.target = self
@@ -1334,13 +1334,13 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         scopePopUp.target = self
         scopePopUp.action = #selector(scopeChanged)
         scopePopUp.font = FontToken.ui
-        scopePopUp.bezelStyle = .rounded
+        scopePopUp.bezelStyle = .inline
         header.addSubview(scopePopUp)
 
         // One-click Home access (for sandboxed global search)
         grantHomeButton.target = self
         grantHomeButton.action = #selector(grantHomeAccessTapped)
-        grantHomeButton.bezelStyle = .rounded
+        grantHomeButton.bezelStyle = .inline
         grantHomeButton.font = FontToken.ui
         header.addSubview(grantHomeButton)
 
@@ -1380,7 +1380,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         table.headerView = nil
         table.delegate = self
         table.dataSource = self
-        table.rowSizeStyle = .medium
+        table.rowSizeStyle = .small
         table.allowsMultipleSelection = true
         table.selectionHighlightStyle = .regular
         table.menu = NSMenu()   // enables contextual menu; our subclass supplies items
@@ -1423,7 +1423,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         preview.addSubview(previewSubtitle)
         previewPrimary.target = self
         previewPrimary.action = #selector(openSelected)
-        previewPrimary.bezelStyle = .rounded
+        previewPrimary.bezelStyle = .inline
         preview.addSubview(previewPrimary)
 
         previewImage.translatesAutoresizingMaskIntoConstraints = false
@@ -1475,7 +1475,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
 
         placeholderButton.target = self
         placeholderButton.action = #selector(grantAccessTapped)
-        placeholderButton.bezelStyle = .rounded
+        placeholderButton.bezelStyle = .inline
         placeholder.addSubview(placeholderButton)
 
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -1484,7 +1484,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             placeholderLabel.centerXAnchor.constraint(equalTo: placeholder.centerXAnchor),
             placeholderLabel.centerYAnchor.constraint(equalTo: placeholder.centerYAnchor, constant: -12),
             placeholderButton.centerXAnchor.constraint(equalTo: placeholder.centerXAnchor),
-            placeholderButton.topAnchor.constraint(equalTo: placeholderLabel.bottomAnchor, constant: 8)
+            placeholderButton.topAnchor.constraint(equalTo: placeholderLabel.bottomAnchor, constant: TZ.x4)
         ])
 
         // No auto-open; wait for user action
@@ -1696,7 +1696,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         backButton.target = self
         backButton.action = #selector(backButtonClicked)
         backButton.wantsLayer = true
-        backButton.layer?.cornerRadius = 6
+        backButton.layer?.cornerRadius = 3
         
         // Set up right-click handler for history menu
         backButton.onRightClick = { [weak self] in
@@ -1710,7 +1710,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         forwardButton.target = self
         forwardButton.action = #selector(forwardButtonClicked)
         forwardButton.wantsLayer = true
-        forwardButton.layer?.cornerRadius = 6
+        forwardButton.layer?.cornerRadius = 3
         
         // Setup navigation container
         navigationContainer.orientation = .horizontal

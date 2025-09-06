@@ -55,9 +55,9 @@ final class CommandPaletteView: NSView, NSTableViewDataSource, NSTableViewDelega
         container.blendingMode = .behindWindow
         container.state = .active
         container.wantsLayer = true
-        container.layer?.cornerRadius = 12
+        container.layer?.cornerRadius = 4
         container.layer?.masksToBounds = true
-        container.layer?.backgroundColor = ColorSchemeToken.surface.withAlphaComponent(0.95).cgColor
+        container.layer?.backgroundColor = ColorSchemeToken.surface.withAlphaComponent(0.98).cgColor
 
         addSubview(container)
         container.translatesAutoresizingMaskIntoConstraints = false
@@ -81,7 +81,7 @@ final class CommandPaletteView: NSView, NSTableViewDataSource, NSTableViewDelega
         scroll.drawsBackground = false
 
         table.headerView = nil
-        table.rowHeight = 44
+        table.rowHeight = 32
         table.intercellSpacing = NSSize(width: 0, height: 0)
         table.backgroundColor = .clear
         table.selectionHighlightStyle = .regular
@@ -171,14 +171,14 @@ final class CommandPaletteView: NSView, NSTableViewDataSource, NSTableViewDelega
             sub.translatesAutoresizingMaskIntoConstraints = false
 
             NSLayoutConstraint.activate([
-                title.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: TZ.x4),
-                title.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -TZ.x4),
-                title.topAnchor.constraint(equalTo: c.topAnchor, constant: TZ.x3),
+                title.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: TZ.x3),
+                title.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -TZ.x3),
+                title.topAnchor.constraint(equalTo: c.topAnchor, constant: TZ.x2),
 
                 sub.leadingAnchor.constraint(equalTo: title.leadingAnchor),
                 sub.trailingAnchor.constraint(equalTo: title.trailingAnchor),
-                sub.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 2),
-                sub.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -TZ.x3)
+                sub.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 1),
+                sub.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -TZ.x2)
             ])
 
             return c

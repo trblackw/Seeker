@@ -9,38 +9,39 @@ import AppKit
 
 // MARK: - Spacing Scale
 
-enum TZ { // 8pt base, like Linear
+enum TZ { // 4pt base, tightened for terminal aesthetic
     static let x0: CGFloat = 0
-    static let x1: CGFloat = 4
-    static let x2: CGFloat = 8
-    static let x3: CGFloat = 12
-    static let x4: CGFloat = 16
-    static let x5: CGFloat = 20
-    static let x6: CGFloat = 24
-    static let x8: CGFloat = 32
-    static let x12: CGFloat = 48
-    static let x16: CGFloat = 64
+    static let x1: CGFloat = 2
+    static let x2: CGFloat = 4
+    static let x3: CGFloat = 6
+    static let x4: CGFloat = 8
+    static let x5: CGFloat = 12
+    static let x6: CGFloat = 16
+    static let x8: CGFloat = 20
+    static let x12: CGFloat = 28
+    static let x16: CGFloat = 36
 }
 
 // MARK: - Typography
 
 enum FontToken {
-    static var ui: NSFont { interFont(weight: .regular, size: 13) }
-    static var uiMedium: NSFont { interFont(weight: .medium, size: 13) }
-    static var small: NSFont { interFont(weight: .regular, size: 12) }
-    static var title: NSFont { interFont(weight: .semibold, size: 20) }
+    static var ui: NSFont { monoFont(weight: .regular, size: 12) }
+    static var uiMedium: NSFont { monoFont(weight: .medium, size: 12) }
+    static var small: NSFont { monoFont(weight: .regular, size: 11) }
+    static var title: NSFont { monoFont(weight: .semibold, size: 16) }
 
-    private static func interFont(weight: NSFont.Weight, size: CGFloat) -> NSFont {
-        if let f = NSFont(name: "Inter-\(weightName(weight))", size: size) {
+    private static func monoFont(weight: NSFont.Weight, size: CGFloat) -> NSFont {
+        // Try SF Mono first, then fallback to system monospace
+        if let f = NSFont(name: "SFMono-\(weightName(weight))", size: size) {
             return f
         }
-        return .systemFont(ofSize: size, weight: weight)
+        return .monospacedSystemFont(ofSize: size, weight: weight)
     }
 
     private static func weightName(_ w: NSFont.Weight) -> String {
         switch w {
         case .medium: return "Medium"
-        case .semibold: return "SemiBold"
+        case .semibold: return "Semibold"
         case .bold: return "Bold"
         default: return "Regular"
         }
@@ -50,19 +51,19 @@ enum FontToken {
 // MARK: - Colors
 
 enum ColorSchemeToken {
-    // Linear-inspired charcoal palette
-    static let bg       = NSColor(hex: "#1C1C1E")
-    static let surface  = NSColor(hex: "#2C2C2E")
-    static let elevated = NSColor(hex: "#3A3A3C")
+    // Terminal/Warp-inspired monochromatic palette
+    static let bg       = NSColor(hex: "#0A0A0A")
+    static let surface  = NSColor(hex: "#141414")
+    static let elevated = NSColor(hex: "#1E1E1E")
 
-    // Text
-    static let textPrimary   = NSColor.white.withAlphaComponent(0.92)
-    static let textSecondary = NSColor.white.withAlphaComponent(0.56)
+    // Text - high contrast monochromatic
+    static let textPrimary   = NSColor(hex: "#FFFFFF")
+    static let textSecondary = NSColor(hex: "#808080")
 
-    // Accent
-    static let accent    = NSColor(hex: "#9E7AFF")
-    static let separator = NSColor.white.withAlphaComponent(0.08)
-    static let selectionFill = NSColor.white.withAlphaComponent(0.06)
+    // Accent - subtle terminal green
+    static let accent    = NSColor(hex: "#00FF41")
+    static let separator = NSColor.white.withAlphaComponent(0.1)
+    static let selectionFill = NSColor(hex: "#00FF41").withAlphaComponent(0.1)
 }
 
 // MARK: - Helpers
@@ -88,13 +89,13 @@ extension NSColor {
 extension NSView {
     func applyCardBackground() {
         wantsLayer = true
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = 4
         layer?.backgroundColor = ColorSchemeToken.surface.cgColor
         layer?.masksToBounds = false
-        layer?.shadowColor = NSColor.black.withAlphaComponent(0.25).cgColor
-        layer?.shadowOpacity = 0.08
+        layer?.shadowColor = NSColor.black.withAlphaComponent(0.4).cgColor
+        layer?.shadowOpacity = 0.15
         layer?.shadowOffset = CGSize(width: 0, height: 1)
-        layer?.shadowRadius = 6
+        layer?.shadowRadius = 3
     }
 
     func addHairlineSeparator(edge: NSRectEdge) {
