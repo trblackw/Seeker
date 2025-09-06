@@ -1222,6 +1222,8 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private let crumbBar = NSStackView()
     private let searchField = NSSearchField()
     private let scopePopUp = NSPopUpButton()
+    private let fileTypePopUp = NSPopUpButton()
+    private let sortPopUp = NSPopUpButton()
     private let viewModeControl = NSSegmentedControl()
     private let grantHomeButton = NSButton(title: "Grant Home", target: nil, action: nil)
     
@@ -1260,6 +1262,49 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private var searchScope: SearchScope = .all
     private var isShowingSearchResults = false
     private var searchResults: [URL] = []
+    
+    // File type filtering
+    private enum FileTypeFilter: String, CaseIterable {
+        case all = "All Files"
+        case images = "Images"
+        case documents = "Documents"
+        case code = "Code"
+        case videos = "Videos"
+        case audio = "Audio"
+        case archives = "Archives"
+        case other = "Other"
+        
+        var extensions: Set<String> {
+            switch self {
+            case .all: return []
+            case .images: return ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "svg", "webp", "heic", "raw"]
+            case .documents: return ["pdf", "doc", "docx", "txt", "rtf", "pages", "keynote", "numbers", "ppt", "pptx", "xls", "xlsx"]
+            case .code: return ["swift", "js", "ts", "py", "java", "cpp", "c", "h", "m", "mm", "html", "css", "json", "xml", "yml", "yaml"]
+            case .videos: return ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v"]
+            case .audio: return ["mp3", "wav", "aac", "flac", "m4a", "ogg", "wma"]
+            case .archives: return ["zip", "rar", "7z", "tar", "gz", "bz2", "dmg", "pkg"]
+            case .other: return []
+            }
+        }
+    }
+    private var currentFileTypeFilter: FileTypeFilter = .all
+    
+    // Sorting options
+    private enum SortOption: String, CaseIterable {
+        case name = "Name"
+        case dateModified = "Date Modified"
+        case dateCreated = "Date Created"
+        case size = "Size"
+        case type = "Type"
+        
+        var isAscending: Bool {
+            switch self {
+            case .name, .type: return true
+            case .dateModified, .dateCreated, .size: return false // Most recent/largest first
+            }
+        }
+    }
+    private var currentSortOption: SortOption = .name
     private var metadataQuery: NSMetadataQuery?
     private var homeURL: URL { FileManager.default.homeDirectoryForCurrentUser }
 
@@ -1310,6 +1355,18 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         searchScope = (scopePopUp.indexOfSelectedItem == 0) ? .all : .currentFolder
         // Re-run current search to reflect new scope
         controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    }
+    
+    @objc private func fileTypeFilterChanged(_ sender: Any? = nil) {
+        let selectedIndex = fileTypePopUp.indexOfSelectedItem
+        currentFileTypeFilter = FileTypeFilter.allCases[selectedIndex]
+        applyFilterAndSort()
+    }
+    
+    @objc private func sortOptionChanged(_ sender: Any? = nil) {
+        let selectedIndex = sortPopUp.indexOfSelectedItem
+        currentSortOption = SortOption.allCases[selectedIndex]
+        applyFilterAndSort()
     }
     
     @objc private func viewModeChanged() {
@@ -1541,6 +1598,28 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         scopePopUp.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(scopePopUp)
         
+        // File type filter
+        fileTypePopUp.addItems(withTitles: FileTypeFilter.allCases.map { $0.rawValue })
+        fileTypePopUp.target = self
+        fileTypePopUp.action = #selector(fileTypeFilterChanged)
+        fileTypePopUp.font = FontToken.ui
+        fileTypePopUp.bezelStyle = .inline
+        fileTypePopUp.setContentHuggingPriority(.required, for: .horizontal)
+        fileTypePopUp.setContentCompressionResistancePriority(.required, for: .horizontal)
+        fileTypePopUp.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(fileTypePopUp)
+        
+        // Sort options
+        sortPopUp.addItems(withTitles: SortOption.allCases.map { $0.rawValue })
+        sortPopUp.target = self
+        sortPopUp.action = #selector(sortOptionChanged)
+        sortPopUp.font = FontToken.ui
+        sortPopUp.bezelStyle = .inline
+        sortPopUp.setContentHuggingPriority(.required, for: .horizontal)
+        sortPopUp.setContentCompressionResistancePriority(.required, for: .horizontal)
+        sortPopUp.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(sortPopUp)
+        
         // View mode toggle
         viewModeControl.segmentCount = 2
         viewModeControl.setImage(NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "List View"), forSegment: 0)
@@ -1578,7 +1657,13 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             grantHomeButton.trailingAnchor.constraint(equalTo: scopePopUp.leadingAnchor, constant: -TZ.x3),
 
             scopePopUp.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            scopePopUp.trailingAnchor.constraint(equalTo: viewModeControl.leadingAnchor, constant: -TZ.x3),
+            scopePopUp.trailingAnchor.constraint(equalTo: fileTypePopUp.leadingAnchor, constant: -TZ.x3),
+            
+            fileTypePopUp.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            fileTypePopUp.trailingAnchor.constraint(equalTo: sortPopUp.leadingAnchor, constant: -TZ.x3),
+            
+            sortPopUp.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            sortPopUp.trailingAnchor.constraint(equalTo: viewModeControl.leadingAnchor, constant: -TZ.x3),
             
             viewModeControl.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             viewModeControl.trailingAnchor.constraint(equalTo: searchField.leadingAnchor, constant: -TZ.x3),
@@ -2120,32 +2205,15 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         let groups = GroupStorageManager.shared.groupsInDirectory(url)
         let groupItems: [DirectoryItem] = groups.map { GroupItem(group: $0) }
         
-        // Combine and sort all items: groups first, then folders, then files
-        allDirectoryItems = (groupItems + fileSystemItems).sorted { a, b in
-            // Groups first
-            let aIsGroup = a is GroupItem
-            let bIsGroup = b is GroupItem
-            if aIsGroup != bIsGroup { return aIsGroup && !bIsGroup }
-            
-            // Then folders before files
-            if !aIsGroup && !bIsGroup {
-                if a.isDirectory != b.isDirectory { return a.isDirectory && !b.isDirectory }
-            }
-            
-            // Finally sort by name
-            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-        }
+        // Combine all items (sorting will be handled by applyFilterAndSort)
+        allDirectoryItems = groupItems + fileSystemItems
         
         // Keep the old URL-based items for compatibility with existing code
         items = fileSystemItems.map { $0.url }
         self.groupItems = groups
         
-        if query.isEmpty {
-            filtered = items
-            filteredDirectoryItems = allDirectoryItems
-        } else {
-            applyFilter()
-        }
+        // Apply filtering and sorting
+        applyFilterAndSort()
         
         // Navigating cancels global search mode and updates home-button visibility
         isShowingSearchResults = false
@@ -2479,23 +2547,16 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
             }
         }
         
-        // Sort: directories first, then files, alphabetically within each category
-        allDirectoryItems = groupFileItems.sorted { a, b in
-            if a.isDirectory != b.isDirectory { return a.isDirectory && !b.isDirectory }
-            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-        }
+        // Store items (sorting will be handled by applyFilterAndSort)
+        allDirectoryItems = groupFileItems
         
         // Update legacy arrays for compatibility - use validated items
         items = validatedGroup.items
         self.groupItems = [] // No sub-groups when viewing group contents
         
         // Apply current filter state
-        if query.isEmpty {
-            filtered = items
-            filteredDirectoryItems = allDirectoryItems
-        } else {
-            applyFilter()
-        }
+        // Apply filtering and sorting
+        applyFilterAndSort()
         
         // Update UI to show we're in a group
         updatePathLabel()
@@ -2652,23 +2713,132 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     private func applyFilter() {
-        guard !query.isEmpty else {
-            filtered = items
-            filteredDirectoryItems = allDirectoryItems
-            table.reloadData()
-            return
+        applyFilterAndSort()
+    }
+    
+    private func applyFilterAndSort() {
+        var itemsToFilter = allDirectoryItems
+        
+        // Apply text search filter
+        if !query.isEmpty {
+            let q = query.lowercased()
+            itemsToFilter = itemsToFilter.filter { item in
+                item.name.lowercased().contains(q)
+            }
         }
+        
+        // Apply file type filter
+        if currentFileTypeFilter != .all {
+            itemsToFilter = itemsToFilter.filter { item in
+                // Always include groups and directories
+                if item is GroupItem || item.isDirectory {
+                    return true
+                }
+                
+                let ext = item.url.pathExtension.lowercased()
+                
+                if currentFileTypeFilter == .other {
+                    // "Other" includes files that don't match any specific category
+                    let allKnownExtensions = FileTypeFilter.allCases
+                        .filter { $0 != .all && $0 != .other }
+                        .flatMap { $0.extensions }
+                    return !Set(allKnownExtensions).contains(ext)
+                } else {
+                    return currentFileTypeFilter.extensions.contains(ext)
+                }
+            }
+        }
+        
+        // Apply sorting
+        itemsToFilter = itemsToFilter.sorted { a, b in
+            // Groups always come first
+            let aIsGroup = a is GroupItem
+            let bIsGroup = b is GroupItem
+            if aIsGroup != bIsGroup {
+                return aIsGroup && !bIsGroup
+            }
+            
+            // Then directories before files (within same category)
+            if !aIsGroup && !bIsGroup && a.isDirectory != b.isDirectory {
+                return a.isDirectory && !b.isDirectory
+            }
+            
+            // Finally sort by selected criteria
+            return compareItems(a, b, by: currentSortOption)
+        }
+        
+        // Update filtered results
+        filteredDirectoryItems = itemsToFilter
+        
+        // Also update the legacy filtered array for compatibility
         let q = query.lowercased()
+        if query.isEmpty {
+            filtered = items
+        } else {
+            filtered = items.filter { $0.lastPathComponent.lowercased().contains(q) }
+        }
         
-        // Filter file system items
-        filtered = items.filter { $0.lastPathComponent.lowercased().contains(q) }
-        
-        // Filter directory items (includes groups)
-        filteredDirectoryItems = allDirectoryItems.filter { item in
-            item.name.lowercased().contains(q)
+        // Rebuild tree if in tree mode
+        if currentViewMode == .tree {
+            buildTreeNodes()
         }
         
         table.reloadData()
+    }
+    
+    private func compareItems(_ a: DirectoryItem, _ b: DirectoryItem, by sortOption: SortOption) -> Bool {
+        switch sortOption {
+        case .name:
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            
+        case .dateModified:
+            let aDate = getModifiedDate(for: a) ?? Date.distantPast
+            let bDate = getModifiedDate(for: b) ?? Date.distantPast
+            return sortOption.isAscending ? aDate < bDate : aDate > bDate
+            
+        case .dateCreated:
+            let aDate = getCreatedDate(for: a) ?? Date.distantPast
+            let bDate = getCreatedDate(for: b) ?? Date.distantPast
+            return sortOption.isAscending ? aDate < bDate : aDate > bDate
+            
+        case .size:
+            let aSize = getFileSize(for: a) ?? 0
+            let bSize = getFileSize(for: b) ?? 0
+            return sortOption.isAscending ? aSize < bSize : aSize > bSize
+            
+        case .type:
+            let aExt = a.url.pathExtension.lowercased()
+            let bExt = b.url.pathExtension.lowercased()
+            return aExt.localizedCaseInsensitiveCompare(bExt) == .orderedAscending
+        }
+    }
+    
+    private func getModifiedDate(for item: DirectoryItem) -> Date? {
+        if let groupItem = item as? GroupItem {
+            return groupItem.group.modifiedAt
+        } else {
+            return try? item.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        }
+    }
+    
+    private func getCreatedDate(for item: DirectoryItem) -> Date? {
+        if let groupItem = item as? GroupItem {
+            return groupItem.group.createdAt
+        } else {
+            return try? item.url.resourceValues(forKeys: [.creationDateKey]).creationDate
+        }
+    }
+    
+    private func getFileSize(for item: DirectoryItem) -> Int64? {
+        if let groupItem = item as? GroupItem {
+            // For groups, return the number of items as "size"
+            return Int64(groupItem.group.items.count)
+        } else if item.isDirectory {
+            // For directories, return 0 (or could count items)
+            return 0
+        } else {
+            return try? item.url.resourceValues(forKeys: [.fileSizeKey]).fileSize.map(Int64.init)
+        }
     }
     private func humanSize(_ bytes: Int64) -> String {
         let fmt = ByteCountFormatter()
