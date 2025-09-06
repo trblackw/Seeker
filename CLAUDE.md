@@ -44,22 +44,42 @@ Seeker is a macOS file browser application built with Swift and AppKit, featurin
    - `ColorSchemeToken`: Linear-inspired dark theme colors
    - Utility extensions for card backgrounds and hairline separators
 
+5. **Grouping System** (`UI/Windows.swift`):
+   - `SeekerGroup`: Data model for file/folder groups with JSON persistence
+   - `GroupStorageManager`: Singleton for group storage in Application Support
+   - `DirectoryItem` protocol: Unifies file system items and groups
+   - `GroupItem`: Represents groups in directory listings
+   - Groups displayed with special icons and accent color highlighting
+   - Command palette integration for group management
+
 **Key Patterns:**
 - Heavy use of AppKit over SwiftUI for precise control
 - Delegate pattern for component communication
 - Custom view controllers extending `NSViewController`
 - Programmatic Auto Layout with `translatesAutoresizingMaskIntoConstraints = false`
 - Tracking areas for hover states and custom mouse interactions
+- Protocol-oriented design for unified directory item handling
+- JSON persistence for user-created groups
+
+**Multiselection & Groups:**
+- Shift-click for range selection in file browser
+- Context menu "Create Group…" for multiple selected items
+- Groups show as "glorified folders" with special visual treatment
+- Group navigation with breadcrumb path indication
+- Escape key to exit group view, back button support
+- Group management via context menus and command palette
 
 **File Structure:**
 - `Seeker/`: Core app files (SeekerApp.swift)
-- `UI/`: Reusable UI components and design tokens
+- `UI/`: Reusable UI components, design tokens, and group system
 - `Fonts/`: Inter font family files
 - Assets in `Seeker/Assets.xcassets`
+- Group data stored in `~/Library/Application Support/Seeker/groups.json`
 
 **Design Philosophy:**
 - Linear-inspired visual design with dark theme (#1C1C1E background)
 - Subtle animations and hover states
 - Typography-first approach with Inter font
 - Custom table view behaviors to override system defaults
+- Groups as organizational layer without modifying file system
 - No external dependencies - pure Swift/AppKit implementation

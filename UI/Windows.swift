@@ -77,24 +77,28 @@ final class HoverButton: NSButton {
 
 // MARK: - SidebarViewController
 final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
-    struct SidebarEntry {
-        let name: String
-        let url: URL
+    enum SidebarItem {
+        case header(String)
+        case folder(name: String, url: URL)
+        case group(SeekerGroup)
     }
-    let entries: [SidebarEntry] = {
+    
+    private var sidebarItems: [SidebarItem] = []
+    
+    private let folderEntries: [(String, String)] = [
+        ("Documents", "Documents"),
+        ("Desktop", "Desktop"), 
+        ("Downloads", "Downloads"),
+        ("Music", "Music"),
+        ("Pictures", "Pictures"),
+        ("Movies", "Movies")
+    ]
+    
+    var firstEntryURL: URL? { 
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return [
-            SidebarEntry(name: "Documents", url: home.appendingPathComponent("Documents")),
-            SidebarEntry(name: "Library", url: home.appendingPathComponent("Library")),
-            SidebarEntry(name: "Desktop", url: home.appendingPathComponent("Desktop")),
-            SidebarEntry(name: "Downloads", url: home.appendingPathComponent("Downloads")),
-            SidebarEntry(name: "Music", url: home.appendingPathComponent("Music")),
-            SidebarEntry(name: "Pictures", url: home.appendingPathComponent("Pictures")),
-            SidebarEntry(name: "Movies", url: home.appendingPathComponent("Movies")),
-            SidebarEntry(name: "Public", url: home.appendingPathComponent("Public"))
-        ]
-    }()
-    var firstEntryURL: URL? { entries.first?.url }
+        return home.appendingPathComponent("Documents")
+    }
+    
     private let table = SidebarTableView()
     private let scroll = NSScrollView()
     weak var delegate: SidebarSelectionDelegate?
@@ -103,6 +107,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         self.view = NSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = ColorSchemeToken.surface.cgColor
+        
+        buildSidebarItems()
 
         let col = NSTableColumn(identifier: .init("sidebar"))
         col.title = ""
@@ -110,8 +116,13 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         table.addTableColumn(col)
         table.headerView = nil
         table.rowSizeStyle = .medium
-        table.allowsMultipleSelection = false
-        table.selectionHighlightStyle = .sourceList
+        table.allowsMultipleSelection = false // Disable multiselection for sidebar
+        if #available(macOS 11.0, *) {
+            table.style = .sourceList
+        } else {
+            table.selectionHighlightStyle = .sourceList
+        }
+        
         table.target = self
         table.doubleAction = nil
         table.delegate = self
@@ -128,54 +139,175 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             scroll.topAnchor.constraint(equalTo: view.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+        
+        // Listen for group changes to refresh sidebar
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(refreshSidebar),
+            name: NSNotification.Name("GroupsDidChange"),
+            object: nil
+        )
+    }
+    
+    private func buildSidebarItems() {
+        var items: [SidebarItem] = []
+        
+        // Folders section
+        items.append(.header("FOLDERS"))
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        for (displayName, folderName) in folderEntries {
+            let url = home.appendingPathComponent(folderName)
+            items.append(.folder(name: displayName, url: url))
+        }
+        
+        // Groups section
+        let allGroups = GroupStorageManager.shared.allGroups()
+        if !allGroups.isEmpty {
+            items.append(.header("GROUPS"))
+            for group in allGroups.sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) {
+                items.append(.group(group))
+            }
+        }
+        
+        sidebarItems = items
+    }
+    
+    @objc private func refreshSidebar() {
+        buildSidebarItems()
+        table.reloadData()
+    }
+    
+    func refreshGroups() {
+        buildSidebarItems()
+        table.reloadData()
     }
 
     // MARK: - Table Data Source/Delegate
     func numberOfRows(in tableView: NSTableView) -> Int {
-        return entries.count
+        return sidebarItems.count
     }
+    
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let id = NSUserInterfaceItemIdentifier("sidebarCell")
-        let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? {
-            let c = NSTableCellView()
-            c.identifier = id
-            let tf = NSTextField(labelWithString: "")
-            tf.font = FontToken.ui
-            tf.textColor = ColorSchemeToken.textPrimary
-            c.textField = tf
-            c.addSubview(tf)
-            tf.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 16),
-                tf.centerYAnchor.constraint(equalTo: c.centerYAnchor)
-            ])
-            return c
-        }()
-        cell.textField?.stringValue = entries[row].name
-        return cell
+        guard row < sidebarItems.count else { return nil }
+        let item = sidebarItems[row]
+        
+        switch item {
+        case .header(let title):
+            let id = NSUserInterfaceItemIdentifier("sidebarHeader")
+            let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? {
+                let c = NSTableCellView()
+                c.identifier = id
+                let tf = NSTextField(labelWithString: "")
+                tf.font = FontToken.small
+                tf.textColor = ColorSchemeToken.textSecondary
+                tf.alignment = .left
+                c.textField = tf
+                c.addSubview(tf)
+                tf.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 16),
+                    tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
+                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -16)
+                ])
+                return c
+            }()
+            cell.textField?.stringValue = title
+            return cell
+            
+        case .folder(let name, _):
+            let id = NSUserInterfaceItemIdentifier("sidebarFolder")
+            let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? {
+                let c = NSTableCellView()
+                c.identifier = id
+                let tf = NSTextField(labelWithString: "")
+                tf.font = FontToken.ui
+                tf.textColor = ColorSchemeToken.textPrimary
+                c.textField = tf
+                c.addSubview(tf)
+                tf.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 24),
+                    tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
+                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -16)
+                ])
+                return c
+            }()
+            cell.textField?.stringValue = name
+            return cell
+            
+        case .group(let group):
+            let id = NSUserInterfaceItemIdentifier("sidebarGroup")
+            let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? {
+                let c = NSTableCellView()
+                c.identifier = id
+                let tf = NSTextField(labelWithString: "")
+                tf.font = FontToken.ui
+                tf.textColor = ColorSchemeToken.accent
+                c.textField = tf
+                c.addSubview(tf)
+                tf.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 24),
+                    tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
+                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -16)
+                ])
+                return c
+            }()
+            cell.textField?.stringValue = group.name
+            return cell
+        }
     }
+    
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        guard row < sidebarItems.count else { return false }
+        
+        // Headers are not selectable
+        switch sidebarItems[row] {
+        case .header:
+            return false
+        case .folder, .group:
+            return true
+        }
+    }
+    
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
-        guard row >= 0, row < entries.count else { return }
-        delegate?.sidebarDidSelectDirectory(entries[row].url)
+        guard row >= 0, row < sidebarItems.count else { return }
+        
+        switch sidebarItems[row] {
+        case .folder(_, let url):
+            delegate?.sidebarDidSelectDirectory(url)
+        case .group(let group):
+            delegate?.sidebarDidSelectGroup(group)
+        case .header:
+            break // Headers should not trigger selection
+        }
     }
+    
     // For initial selection programmatically if needed
     func selectRow(_ idx: Int) {
         table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 }
 
 protocol SidebarSelectionDelegate: AnyObject {
     func sidebarDidSelectDirectory(_ url: URL)
+    func sidebarDidSelectGroup(_ group: SeekerGroup)
 }
 
 // MARK: - SeekerRootViewController with Split View
 final class SeekerRootViewController: NSSplitViewController, SidebarSelectionDelegate {
     private let sidebarVC = SidebarViewController()
     private let directoryVC = DirectoryListViewController()
+    private let commandPalette = CommandPaletteView()
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        setupCommandPalette()
 
         sidebarVC.delegate = self
 
@@ -196,10 +328,101 @@ final class SeekerRootViewController: NSSplitViewController, SidebarSelectionDel
         // Do not auto-open any folder on launch (avoid system permission prompts).
         // Leave selection empty; user click will drive navigation.
     }
+    
+    private func setupCommandPalette() {
+        // Add command palette to view hierarchy but keep it hidden
+        view.addSubview(commandPalette, positioned: .above, relativeTo: nil)
+        commandPalette.isHidden = true
+        commandPalette.translatesAutoresizingMaskIntoConstraints = false
+        
+        NSLayoutConstraint.activate([
+            commandPalette.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            commandPalette.topAnchor.constraint(equalTo: view.topAnchor, constant: 80),
+            commandPalette.widthAnchor.constraint(equalToConstant: 600),
+            commandPalette.heightAnchor.constraint(equalToConstant: 400)
+        ])
+        
+        // Listen for command palette toggle
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(toggleCommandPalette),
+            name: .togglePalette,
+            object: nil
+        )
+        
+        // Setup initial commands
+        setupCommands()
+    }
+    
+    @objc private func toggleCommandPalette() {
+        if commandPalette.isHidden {
+            setupCommands() // Refresh commands
+            commandPalette.show()
+        } else {
+            commandPalette.hide()
+        }
+    }
+    
+    private func setupCommands() {
+        var commands: [Command] = []
+        
+        // Navigation commands
+        commands.append(Command(title: "Go to Home", subtitle: "Navigate to home directory") {
+            self.directoryVC.selectTarget(FileManager.default.homeDirectoryForCurrentUser)
+        })
+        
+        commands.append(Command(title: "Go to Documents", subtitle: "Navigate to documents folder") {
+            let docs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
+            self.directoryVC.selectTarget(docs)
+        })
+        
+        commands.append(Command(title: "Go to Desktop", subtitle: "Navigate to desktop folder") {
+            let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+            self.directoryVC.selectTarget(desktop)
+        })
+        
+        // Group commands - only show if selection available
+        if let currentDir = directoryVC.currentDirectory as URL? {
+            let selectedItems = directoryVC.directoryItems(for: directoryVC.table.selectedRowIndexes)
+            
+            if selectedItems.count > 1 && selectedItems.allSatisfy({ !($0 is GroupItem) }) {
+                commands.append(Command(title: "Create Group from Selection", subtitle: "Group \(selectedItems.count) selected items") {
+                    self.directoryVC.createGroupFromSelection()
+                })
+            }
+            
+            // Show existing groups in current directory
+            let groups = GroupStorageManager.shared.groupsInDirectory(currentDir)
+            for group in groups {
+                commands.append(Command(title: "Open Group: \(group.name)", subtitle: "View \(group.items.count) grouped items") {
+                    self.directoryVC.showGroupContents(group)
+                })
+                
+                commands.append(Command(title: "Delete Group: \(group.name)", subtitle: "Remove group (keeps files)") {
+                    self.directoryVC.deleteGroup(group)
+                })
+            }
+        }
+        
+        // File operations
+        commands.append(Command(title: "Open Terminal Here", subtitle: "Open terminal in current directory") {
+            self.directoryVC.openTerminalHere()
+        })
+        
+        commandPalette.setCommands(commands)
+    }
 
     // SidebarSelectionDelegate
     func sidebarDidSelectDirectory(_ url: URL) {
         directoryVC.selectTarget(url) // shows contents if already authorized, else a non-modal placeholder with a Grant Access button
+    }
+    
+    func sidebarDidSelectGroup(_ group: SeekerGroup) {
+        directoryVC.showGroupContents(group)
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 }
 
@@ -216,6 +439,187 @@ import UniformTypeIdentifiers
 import QuickLookThumbnailing
 import Quartz
 
+// MARK: - Group Data Model
+
+struct SeekerGroup: Codable, Identifiable {
+    let id: UUID
+    var name: String
+    var items: [URL]
+    var parentDirectory: URL
+    var createdAt: Date
+    var modifiedAt: Date
+    
+    init(name: String, items: [URL], parentDirectory: URL) {
+        self.id = UUID()
+        self.name = name
+        self.items = items
+        self.parentDirectory = parentDirectory
+        self.createdAt = Date()
+        self.modifiedAt = Date()
+    }
+    
+    mutating func addItems(_ newItems: [URL]) {
+        let uniqueNewItems = newItems.filter { !items.contains($0) }
+        items.append(contentsOf: uniqueNewItems)
+        modifiedAt = Date()
+    }
+    
+    mutating func removeItems(_ itemsToRemove: [URL]) {
+        items.removeAll { itemsToRemove.contains($0) }
+        modifiedAt = Date()
+    }
+    
+    mutating func rename(to newName: String) {
+        name = newName
+        modifiedAt = Date()
+    }
+}
+
+// MARK: - Group Storage Manager
+
+final class GroupStorageManager {
+    static let shared = GroupStorageManager()
+    
+    private var groups: [SeekerGroup] = []
+    private let storageURL: URL
+    
+    private init() {
+        // Store groups in Application Support directory
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let seekerDir = appSupport.appendingPathComponent("Seeker")
+        try? FileManager.default.createDirectory(at: seekerDir, withIntermediateDirectories: true)
+        self.storageURL = seekerDir.appendingPathComponent("groups.json")
+        loadGroups()
+    }
+    
+    // MARK: - Persistence
+    
+    private func loadGroups() {
+        guard FileManager.default.fileExists(atPath: storageURL.path) else { return }
+        
+        do {
+            let data = try Data(contentsOf: storageURL)
+            groups = try JSONDecoder().decode([SeekerGroup].self, from: data)
+        } catch {
+            print("Failed to load groups: \(error)")
+        }
+    }
+    
+    private func saveGroups() {
+        do {
+            let data = try JSONEncoder().encode(groups)
+            try data.write(to: storageURL)
+        } catch {
+            print("Failed to save groups: \(error)")
+        }
+    }
+    
+    // MARK: - Group Management
+    
+    func createGroup(name: String, items: [URL], parentDirectory: URL) -> SeekerGroup {
+        let group = SeekerGroup(name: name, items: items, parentDirectory: parentDirectory)
+        groups.append(group)
+        saveGroups()
+        NotificationCenter.default.post(name: NSNotification.Name("GroupsDidChange"), object: nil)
+        return group
+    }
+    
+    func deleteGroup(_ group: SeekerGroup) {
+        groups.removeAll { $0.id == group.id }
+        saveGroups()
+        NotificationCenter.default.post(name: NSNotification.Name("GroupsDidChange"), object: nil)
+    }
+    
+    func updateGroup(_ group: SeekerGroup) {
+        if let index = groups.firstIndex(where: { $0.id == group.id }) {
+            groups[index] = group
+            saveGroups()
+            NotificationCenter.default.post(name: NSNotification.Name("GroupsDidChange"), object: nil)
+        }
+    }
+    
+    func groupsInDirectory(_ directory: URL) -> [SeekerGroup] {
+        return groups.filter { $0.parentDirectory == directory }
+    }
+    
+    func allGroups() -> [SeekerGroup] {
+        return groups
+    }
+    
+    func group(withId id: UUID) -> SeekerGroup? {
+        return groups.first { $0.id == id }
+    }
+    
+    // MARK: - Group Validation
+    
+    func validateGroup(_ group: SeekerGroup) -> SeekerGroup {
+        // Remove items that no longer exist
+        var updatedGroup = group
+        let validItems = group.items.filter { FileManager.default.fileExists(atPath: $0.path) }
+        
+        if validItems.count != group.items.count {
+            updatedGroup.items = validItems
+            updatedGroup.modifiedAt = Date()
+            updateGroup(updatedGroup)
+        }
+        
+        return updatedGroup
+    }
+}
+
+// MARK: - Directory Item Protocol
+
+protocol DirectoryItem {
+    var name: String { get }
+    var url: URL { get }
+    var isDirectory: Bool { get }
+    var modificationDate: Date? { get }
+    var size: Int64? { get }
+}
+
+// MARK: - File System Item
+
+struct FileSystemItem: DirectoryItem {
+    let url: URL
+    let resourceValues: URLResourceValues
+    
+    var name: String { url.lastPathComponent }
+    var isDirectory: Bool { resourceValues.isDirectory ?? false }
+    var modificationDate: Date? { resourceValues.contentModificationDate }
+    var size: Int64? { 
+        if let fileSize = resourceValues.fileSize {
+            return Int64(fileSize)
+        }
+        return nil
+    }
+    
+    init(url: URL) throws {
+        self.url = url
+        self.resourceValues = try url.resourceValues(forKeys: [
+            .isDirectoryKey, .contentModificationDateKey, .fileSizeKey
+        ])
+    }
+}
+
+// MARK: - Group Item
+
+struct GroupItem: DirectoryItem {
+    let group: SeekerGroup
+    
+    var name: String { group.name }
+    var url: URL { 
+        // Create a special URL scheme for groups
+        URL(string: "seeker-group://\(group.id.uuidString)")!
+    }
+    var isDirectory: Bool { true }
+    var modificationDate: Date? { group.modifiedAt }
+    var size: Int64? { nil }
+    
+    init(group: SeekerGroup) {
+        self.group = GroupStorageManager.shared.validateGroup(group)
+    }
+}
+
 // Custom table view that swallows default double-click "open" behavior
 final class DirectoryTableView: NSTableView {
     weak var owner: DirectoryListViewController?
@@ -227,6 +631,19 @@ final class DirectoryTableView: NSTableView {
                     return
                 }
             }
+            
+            // Handle multiselection with Shift key
+            let p = convert(event.locationInWindow, from: nil)
+            let clickedRow = row(at: p)
+            
+            if clickedRow >= 0 && event.modifierFlags.contains(.shift) && selectedRowIndexes.count > 0 {
+                // Shift-click: extend selection from first selected to clicked row
+                let firstSelected = selectedRowIndexes.first ?? clickedRow
+                let range = min(firstSelected, clickedRow)...max(firstSelected, clickedRow)
+                selectRowIndexes(IndexSet(range), byExtendingSelection: false)
+                return
+            }
+            
             super.mouseDown(with: event)
         }
 
@@ -234,8 +651,13 @@ final class DirectoryTableView: NSTableView {
             let p = convert(event.locationInWindow, from: nil)
             let r = row(at: p)
             if r >= 0 {
-                selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
-                return owner?.buildContextMenu(for: IndexSet(integer: r))
+                // If right-clicking on an already selected row, keep existing selection
+                if selectedRowIndexes.contains(r) {
+                    return owner?.buildContextMenu(for: selectedRowIndexes)
+                } else {
+                    selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
+                    return owner?.buildContextMenu(for: IndexSet(integer: r))
+                }
             }
             return super.menu(for: event)
         }
@@ -299,46 +721,109 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         table.selectRowIndexes(rows, byExtendingSelection: false)
 
         let menu = NSMenu()
+        let selectedItems = directoryItems(for: rows)
+        let hasGroups = selectedItems.contains { $0 is GroupItem }
+        let hasRegularFiles = selectedItems.contains { !($0 is GroupItem) }
 
         let openItem = NSMenuItem(title: "Open", action: #selector(ctxOpen), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
 
-        let quickLook = NSMenuItem(title: "Quick Look", action: #selector(ctxQuickLook), keyEquivalent: "")
-        quickLook.target = self
-        menu.addItem(quickLook)
+        if !hasGroups {
+            let quickLook = NSMenuItem(title: "Quick Look", action: #selector(ctxQuickLook), keyEquivalent: "")
+            quickLook.target = self
+            menu.addItem(quickLook)
 
-        let openTerm = NSMenuItem(title: "Open in Terminal", action: #selector(ctxOpenInTerminal), keyEquivalent: "")
-        openTerm.target = self
-        menu.addItem(openTerm)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let duplicate = NSMenuItem(title: "Duplicate", action: #selector(ctxDuplicate), keyEquivalent: "")
-        duplicate.target = self
-        menu.addItem(duplicate)
-
-        let compress = NSMenuItem(title: "Compress…", action: #selector(ctxCompress), keyEquivalent: "")
-        compress.target = self
-        menu.addItem(compress)
-
-        let tag = NSMenuItem(title: "Tag…", action: #selector(ctxTag), keyEquivalent: "")
-        tag.target = self
-        menu.addItem(tag)
+            let openTerm = NSMenuItem(title: "Open in Terminal", action: #selector(ctxOpenInTerminal), keyEquivalent: "")
+            openTerm.target = self
+            menu.addItem(openTerm)
+        }
 
         menu.addItem(NSMenuItem.separator())
 
-        let copyPath = NSMenuItem(title: "Copy Path", action: #selector(ctxCopyPath), keyEquivalent: "")
-        copyPath.target = self
-        menu.addItem(copyPath)
+        if !hasGroups {
+            let duplicate = NSMenuItem(title: "Duplicate", action: #selector(ctxDuplicate), keyEquivalent: "")
+            duplicate.target = self
+            menu.addItem(duplicate)
 
-        let renameItem = NSMenuItem(title: "Rename…", action: #selector(ctxRename), keyEquivalent: "")
-        renameItem.target = self
-        menu.addItem(renameItem)
+            let compress = NSMenuItem(title: "Compress…", action: #selector(ctxCompress), keyEquivalent: "")
+            compress.target = self
+            menu.addItem(compress)
 
-        let deleteItem = NSMenuItem(title: "Move to Trash", action: #selector(ctxTrash), keyEquivalent: "")
-        deleteItem.target = self
-        menu.addItem(deleteItem)
+            let tag = NSMenuItem(title: "Tag…", action: #selector(ctxTag), keyEquivalent: "")
+            tag.target = self
+            menu.addItem(tag)
+        }
+        
+        // Group actions
+        if rows.count > 1 && hasRegularFiles && !hasGroups {
+            menu.addItem(NSMenuItem.separator())
+            
+            let createGroup = NSMenuItem(title: "Create Group…", action: #selector(ctxCreateGroup), keyEquivalent: "")
+            createGroup.target = self
+            menu.addItem(createGroup)
+        }
+        
+        // Add to existing group (when in regular directory view)
+        if !isShowingGroupContents && rows.count >= 1 && hasRegularFiles && !hasGroups {
+            let allGroups = GroupStorageManager.shared.allGroups()
+            if !allGroups.isEmpty {
+                menu.addItem(NSMenuItem.separator())
+                
+                let addToGroupMenu = NSMenu(title: "Add to Group")
+                for group in allGroups.sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) {
+                    let item = NSMenuItem(title: group.name, action: #selector(ctxAddToExistingGroup(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = group
+                    addToGroupMenu.addItem(item)
+                }
+                
+                let addToGroupItem = NSMenuItem(title: "Add to Group", action: nil, keyEquivalent: "")
+                addToGroupItem.submenu = addToGroupMenu
+                menu.addItem(addToGroupItem)
+            }
+        }
+        
+        // Group-specific actions
+        if rows.count == 1 && hasGroups {
+            menu.addItem(NSMenuItem.separator())
+            
+            let addToGroup = NSMenuItem(title: "Add Items to Group…", action: #selector(ctxAddToGroup), keyEquivalent: "")
+            addToGroup.target = self
+            menu.addItem(addToGroup)
+            
+            let removeFromGroup = NSMenuItem(title: "Remove Items from Group…", action: #selector(ctxRemoveFromGroup), keyEquivalent: "")
+            removeFromGroup.target = self
+            // Only show if we're viewing group contents
+            removeFromGroup.isHidden = !isShowingGroupContents
+            menu.addItem(removeFromGroup)
+            
+            menu.addItem(NSMenuItem.separator())
+            
+            let renameGroup = NSMenuItem(title: "Rename Group…", action: #selector(ctxRenameGroup), keyEquivalent: "")
+            renameGroup.target = self
+            menu.addItem(renameGroup)
+            
+            let deleteGroup = NSMenuItem(title: "Delete Group", action: #selector(ctxDeleteGroup), keyEquivalent: "")
+            deleteGroup.target = self
+            menu.addItem(deleteGroup)
+        }
+
+        if !hasGroups {
+            menu.addItem(NSMenuItem.separator())
+
+            let copyPath = NSMenuItem(title: "Copy Path", action: #selector(ctxCopyPath), keyEquivalent: "")
+            copyPath.target = self
+            menu.addItem(copyPath)
+
+            let renameItem = NSMenuItem(title: "Rename…", action: #selector(ctxRename), keyEquivalent: "")
+            renameItem.target = self
+            menu.addItem(renameItem)
+
+            let deleteItem = NSMenuItem(title: "Move to Trash", action: #selector(ctxTrash), keyEquivalent: "")
+            deleteItem.target = self
+            menu.addItem(deleteItem)
+        }
 
         return menu
     }
@@ -346,10 +831,24 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     // Helper to convert a set of rows into URLs from the active data source
     private func urls(for rows: IndexSet) -> [URL] {
         let rowsArray = rows.compactMap { $0 }
-        let dataset = currentRows()
+        let items = currentDirectoryItems()
         return rowsArray.compactMap { idx in
-            guard dataset.indices.contains(idx) else { return nil }
-            return dataset[idx]
+            guard items.indices.contains(idx) else { return nil }
+            let item = items[idx]
+            
+            // For groups, we can't return a file URL, so we skip them in URL-based operations
+            if item is GroupItem { return nil }
+            return item.url
+        }
+    }
+    
+    // Helper to get directory items from row indices
+    func directoryItems(for rows: IndexSet) -> [DirectoryItem] {
+        let rowsArray = rows.compactMap { $0 }
+        let items = currentDirectoryItems()
+        return rowsArray.compactMap { idx in
+            guard items.indices.contains(idx) else { return nil }
+            return items[idx]
         }
     }
     
@@ -497,6 +996,150 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         }
         openDirectory(currentDirectory)
     }
+    
+    @objc private func ctxCreateGroup() {
+        let rows = table.selectedRowIndexes
+        let urls = urls(for: rows)
+        guard urls.count > 1 else { return }
+        
+        let alert = NSAlert()
+        alert.messageText = "Create Group"
+        alert.informativeText = "Enter a name for the group containing \(urls.count) items."
+        alert.alertStyle = .informational
+        
+        let tf = NSTextField(string: "New Group")
+        tf.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        alert.accessoryView = tf
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            let groupName = tf.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !groupName.isEmpty else { return }
+            
+            _ = GroupStorageManager.shared.createGroup(
+                name: groupName,
+                items: urls,
+                parentDirectory: currentDirectory
+            )
+            
+            // Refresh directory listing to show the new group
+            openDirectory(currentDirectory)
+        }
+    }
+    
+    @objc private func ctxDeleteGroup() {
+        let rows = table.selectedRowIndexes
+        let items = directoryItems(for: rows)
+        guard let groupItem = items.first as? GroupItem else { return }
+        
+        deleteGroup(groupItem.group)
+    }
+    
+    @objc private func ctxRenameGroup() {
+        let rows = table.selectedRowIndexes
+        let items = directoryItems(for: rows)
+        guard let groupItem = items.first as? GroupItem else { return }
+        
+        let alert = NSAlert()
+        alert.messageText = "Rename Group"
+        alert.informativeText = "Enter a new name for the group."
+        alert.alertStyle = .informational
+        
+        let tf = NSTextField(string: groupItem.group.name)
+        tf.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        alert.accessoryView = tf
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            let newName = tf.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !newName.isEmpty, newName != groupItem.group.name else { return }
+            
+            var updatedGroup = groupItem.group
+            updatedGroup.rename(to: newName)
+            GroupStorageManager.shared.updateGroup(updatedGroup)
+            
+            // Refresh directory listing
+            openDirectory(currentDirectory)
+        }
+    }
+    
+    @objc private func ctxAddToGroup() {
+        let rows = table.selectedRowIndexes
+        let items = directoryItems(for: rows)
+        guard let groupItem = items.first as? GroupItem else { return }
+        
+        // Show file picker to select items to add
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.directoryURL = currentDirectory
+        
+        if panel.runModal() == .OK {
+            var updatedGroup = groupItem.group
+            updatedGroup.addItems(panel.urls)
+            GroupStorageManager.shared.updateGroup(updatedGroup)
+            
+            // Refresh display
+            if isShowingGroupContents {
+                showGroupContents(updatedGroup)
+            } else {
+                openDirectory(currentDirectory)
+            }
+        }
+    }
+    
+    @objc private func ctxRemoveFromGroup() {
+        guard isShowingGroupContents, let group = currentGroup else { return }
+        
+        let rows = table.selectedRowIndexes
+        let urls = urls(for: rows)
+        guard !urls.isEmpty else { return }
+        
+        let alert = NSAlert()
+        alert.messageText = "Remove from Group"
+        alert.informativeText = "Remove \(urls.count) item(s) from the group \"\(group.name)\"? The files will remain in their original locations."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            var updatedGroup = group
+            updatedGroup.removeItems(urls)
+            GroupStorageManager.shared.updateGroup(updatedGroup)
+            
+            // Refresh group contents view
+            if updatedGroup.items.isEmpty {
+                // If group is now empty, exit group view
+                exitGroupView()
+            } else {
+                showGroupContents(updatedGroup)
+            }
+        }
+    }
+    
+    @objc private func ctxAddToExistingGroup(_ sender: NSMenuItem) {
+        guard let group = sender.representedObject as? SeekerGroup else { return }
+        
+        let rows = table.selectedRowIndexes
+        let urls = urls(for: rows)
+        guard !urls.isEmpty else { return }
+        
+        var updatedGroup = group
+        updatedGroup.addItems(urls)
+        GroupStorageManager.shared.updateGroup(updatedGroup)
+        
+        // Show confirmation
+        let alert = NSAlert()
+        alert.messageText = "Added to Group"
+        alert.informativeText = "Added \(urls.count) item(s) to group \"\(group.name)\"."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
 
     // MARK: - Context Menu
     // Placeholder for unauthorized locations
@@ -521,7 +1164,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private let scopePopUp = NSPopUpButton()
     private let grantHomeButton = NSButton(title: "Grant Home", target: nil, action: nil)
     private let scroll = NSScrollView()
-    private let table = DirectoryTableView()
+    let table = DirectoryTableView()
 
     // Preview (right) pane
     private let preview = NSView()
@@ -539,6 +1182,11 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     // State
     private var items: [URL] = []
     private var filtered: [URL] = []
+    private var groupItems: [SeekerGroup] = []
+    private var allDirectoryItems: [DirectoryItem] = []
+    private var filteredDirectoryItems: [DirectoryItem] = []
+    private var currentGroup: SeekerGroup?
+    private var isShowingGroupContents = false
     private(set) var currentDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     private var query: String = ""
     private enum SearchScope { case all, currentFolder }
@@ -687,7 +1335,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         table.delegate = self
         table.dataSource = self
         table.rowSizeStyle = .medium
-        table.allowsMultipleSelection = false
+        table.allowsMultipleSelection = true
         table.selectionHighlightStyle = .regular
         table.menu = NSMenu()   // enables contextual menu; our subclass supplies items
 
@@ -756,7 +1404,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         ])
 
         table.target = self
-        (table as? DirectoryTableView)?.owner = self
+        table.owner = self
         updateHomeAccessButtonVisibility()
 
         updatePathLabel()
@@ -994,7 +1642,11 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     private func updatePathLabel() {
-        pathLabel.stringValue = currentDirectory.path
+        if isShowingGroupContents, let group = currentGroup {
+            pathLabel.stringValue = "🗂 \(group.name) (\(group.items.count) items)"
+        } else {
+            pathLabel.stringValue = currentDirectory.path
+        }
         rebuildBreadcrumb()
     }
 
@@ -1005,31 +1657,55 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
         }
         currentDirectory = url
         updatePathLabel()
+        
+        // Load file system items
         let fm = FileManager.default
+        var fileSystemItems: [DirectoryItem] = []
         do {
             let contents = try fm.contentsOfDirectory(
                 at: url,
                 includingPropertiesForKeys: [.isDirectoryKey, .localizedNameKey],
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]
             )
-            // Sort: folders first, then by localized name
-            items = contents.sorted { a, b in
-                let aIsDir = (try? a.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                let bIsDir = (try? b.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                if aIsDir != bIsDir { return aIsDir && !bIsDir }
-                let aName = (try? a.resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? a.lastPathComponent
-                let bName = (try? b.resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? b.lastPathComponent
-                return aName.localizedCaseInsensitiveCompare(bName) == .orderedAscending
-            }
-            if query.isEmpty {
-                filtered = items
-            } else {
-                applyFilter()
+            // Convert URLs to FileSystemItems
+            fileSystemItems = contents.compactMap { url in
+                try? FileSystemItem(url: url)
             }
         } catch {
-            items = []
-            filtered = []
+            fileSystemItems = []
         }
+        
+        // Load groups for this directory
+        let groups = GroupStorageManager.shared.groupsInDirectory(url)
+        let groupItems: [DirectoryItem] = groups.map { GroupItem(group: $0) }
+        
+        // Combine and sort all items: groups first, then folders, then files
+        allDirectoryItems = (groupItems + fileSystemItems).sorted { a, b in
+            // Groups first
+            let aIsGroup = a is GroupItem
+            let bIsGroup = b is GroupItem
+            if aIsGroup != bIsGroup { return aIsGroup && !bIsGroup }
+            
+            // Then folders before files
+            if !aIsGroup && !bIsGroup {
+                if a.isDirectory != b.isDirectory { return a.isDirectory && !b.isDirectory }
+            }
+            
+            // Finally sort by name
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+        
+        // Keep the old URL-based items for compatibility with existing code
+        items = fileSystemItems.map { $0.url }
+        self.groupItems = groups
+        
+        if query.isEmpty {
+            filtered = items
+            filteredDirectoryItems = allDirectoryItems
+        } else {
+            applyFilter()
+        }
+        
         // Navigating cancels global search mode and updates home-button visibility
         isShowingSearchResults = false
         searchResults.removeAll()
@@ -1040,8 +1716,12 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
     
     private func currentRows() -> [URL] {
-          return isShowingSearchResults ? searchResults : filtered
-      }
+        return isShowingSearchResults ? searchResults : filtered
+    }
+    
+    private func currentDirectoryItems() -> [DirectoryItem] {
+        return isShowingSearchResults ? searchResults.compactMap { try? FileSystemItem(url: $0) } : filteredDirectoryItems
+    }
     
     deinit {
         removeMetadataObservers()
@@ -1059,6 +1739,12 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     func goBack() {
+        // If we're in a group, exit group view first
+        if isShowingGroupContents {
+            exitGroupView()
+            return
+        }
+        
         guard let prev = backStack.popLast() else { NSSound.beep(); return }
         suppressHistoryPush = true
         forwardStack.append(currentDirectory)
@@ -1082,7 +1768,7 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        currentRows().count
+        return isShowingSearchResults ? searchResults.count : filteredDirectoryItems.count
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -1135,42 +1821,202 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("cell")
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? DirectoryCellView ?? DirectoryCellView()
-        let url = currentRows()[row]
-        let kind = itemKind(for: url)
-        cell.nameField.stringValue = displayName(for: url)
-        cell.iconView.image = iconForList(url: url, kind: kind)
-        cell.toolTip = url.path
+        
+        let items = currentDirectoryItems()
+        guard row < items.count else { return cell }
+        let item = items[row]
+        
+        if let groupItem = item as? GroupItem {
+            // Display group with special styling
+            cell.nameField.stringValue = groupItem.name
+            cell.iconView.image = NSImage(systemSymbolName: "folder.badge.gearshape", accessibilityDescription: "Group")
+            cell.nameField.textColor = ColorSchemeToken.accent // Highlight groups with accent color
+            cell.toolTip = "Group containing \(groupItem.group.items.count) items"
+        } else {
+            // Display regular file/folder
+            let url = item.url
+            let kind = itemKind(for: url)
+            cell.nameField.stringValue = displayName(for: url)
+            cell.iconView.image = iconForList(url: url, kind: kind)
+            cell.nameField.textColor = ColorSchemeToken.textPrimary
+            cell.toolTip = url.path
+        }
+        
         return cell
     }
 
     @objc func handleRowDoubleClick(_ sender: Any) {
         let row = table.clickedRow
-        let rows = currentRows()
-        guard row >= 0, rows.indices.contains(row) else { return }
-        let url = rows[row]
-        if let dirURL = resolvedDirectoryIfAny(for: url) {
-            // Navigate inside Seeker, obtaining permission if needed
-            navigate(to: dirURL)
+        let items = currentDirectoryItems()
+        guard row >= 0, items.indices.contains(row) else { return }
+        let item = items[row]
+        
+        if let groupItem = item as? GroupItem {
+            // Navigate into group (show group contents)
+            showGroupContents(groupItem.group)
         } else {
-            // File: open with the default application
-            NSWorkspace.shared.open(url)
+            let url = item.url
+            if let dirURL = resolvedDirectoryIfAny(for: url) {
+                // Navigate inside Seeker, obtaining permission if needed
+                navigate(to: dirURL)
+            } else {
+                // File: open with the default application
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+    
+    func showGroupContents(_ group: SeekerGroup) {
+        // Validate the group and remove any items that no longer exist
+        let validatedGroup = GroupStorageManager.shared.validateGroup(group)
+        currentGroup = validatedGroup
+        isShowingGroupContents = true
+        
+        // Create directory items from group's items - ensure all items are included
+        var groupFileItems: [DirectoryItem] = []
+        for url in validatedGroup.items {
+            do {
+                let item = try FileSystemItem(url: url)
+                groupFileItems.append(item)
+            } catch {
+                print("Failed to create FileSystemItem for \(url.path): \(error)")
+            }
+        }
+        
+        // Sort: directories first, then files, alphabetically within each category
+        allDirectoryItems = groupFileItems.sorted { a, b in
+            if a.isDirectory != b.isDirectory { return a.isDirectory && !b.isDirectory }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+        
+        // Update legacy arrays for compatibility - use validated items
+        items = validatedGroup.items
+        self.groupItems = [] // No sub-groups when viewing group contents
+        
+        // Apply current filter state
+        if query.isEmpty {
+            filtered = items
+            filteredDirectoryItems = allDirectoryItems
+        } else {
+            applyFilter()
+        }
+        
+        // Update UI to show we're in a group
+        updatePathLabel()
+        isShowingSearchResults = false
+        searchResults.removeAll()
+        table.deselectAll(nil)
+        preview.isHidden = true
+        table.reloadData()
+        
+        // Add to navigation history but don't change currentDirectory
+        // Groups are a virtual navigation layer
+        if !suppressHistoryPush {
+            backStack.append(currentDirectory)
+            forwardStack.removeAll()
+        }
+        
+        print("Showing group '\(validatedGroup.name)' with \(validatedGroup.items.count) items")
+        print("Directory items created: \(allDirectoryItems.count)")
+        print("Items: \(allDirectoryItems.map { $0.name }.joined(separator: ", "))")
+    }
+    
+    private func exitGroupView() {
+        guard isShowingGroupContents else { return }
+        isShowingGroupContents = false
+        currentGroup = nil
+        
+        // Reload the parent directory
+        suppressHistoryPush = true
+        openDirectory(currentDirectory)
+        suppressHistoryPush = false
+    }
+    
+    func createGroupFromSelection() {
+        let selectedItems = directoryItems(for: table.selectedRowIndexes)
+        let urls = selectedItems.compactMap { item -> URL? in
+            guard !(item is GroupItem) else { return nil }
+            return item.url
+        }
+        guard urls.count > 1 else { return }
+        
+        let alert = NSAlert()
+        alert.messageText = "Create Group"
+        alert.informativeText = "Enter a name for the group containing \(urls.count) items."
+        alert.alertStyle = .informational
+        
+        let tf = NSTextField(string: "New Group")
+        tf.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        alert.accessoryView = tf
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            let groupName = tf.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !groupName.isEmpty else { return }
+            
+            _ = GroupStorageManager.shared.createGroup(
+                name: groupName,
+                items: urls,
+                parentDirectory: currentDirectory
+            )
+            
+            // Refresh directory listing
+            if isShowingGroupContents {
+                exitGroupView()
+            } else {
+                openDirectory(currentDirectory)
+            }
+        }
+    }
+    
+    func deleteGroup(_ group: SeekerGroup) {
+        let alert = NSAlert()
+        alert.messageText = "Delete Group"
+        alert.informativeText = "Are you sure you want to delete the group \"\(group.name)\"? The files will remain unchanged."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete Group")
+        alert.addButton(withTitle: "Cancel")
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            GroupStorageManager.shared.deleteGroup(group)
+            
+            // Refresh directory listing
+            if isShowingGroupContents && currentGroup?.id == group.id {
+                exitGroupView()
+            } else {
+                openDirectory(currentDirectory)
+            }
         }
     }
 
     override func keyDown(with event: NSEvent) {
+        // Escape exits group view
+        if event.keyCode == 53 && isShowingGroupContents { // Escape
+            exitGroupView()
+            return
+        }
+        
         // Return/Enter opens the selected folder or file
         if event.keyCode == 36 || event.keyCode == 76 { // return or keypad-enter
             let row = table.selectedRow
-            let rows = currentRows()
-            if row >= 0, rows.indices.contains(row) {
-                let url = rows[row]
-                if let dirURL = resolvedDirectoryIfAny(for: url) {
-                    navigate(to: dirURL)
+            let items = currentDirectoryItems()
+            if row >= 0, items.indices.contains(row) {
+                let item = items[row]
+                
+                if let groupItem = item as? GroupItem {
+                    showGroupContents(groupItem.group)
                     return
                 } else {
-                    // Open the file with the default application
-                    NSWorkspace.shared.open(url)
-                    return
+                    let url = item.url
+                    if let dirURL = resolvedDirectoryIfAny(for: url) {
+                        navigate(to: dirURL)
+                        return
+                    } else {
+                        // Open the file with the default application
+                        NSWorkspace.shared.open(url)
+                        return
+                    }
                 }
             }
         }
@@ -1208,11 +2054,20 @@ final class DirectoryListViewController: NSViewController, NSTableViewDataSource
     private func applyFilter() {
         guard !query.isEmpty else {
             filtered = items
+            filteredDirectoryItems = allDirectoryItems
             table.reloadData()
             return
         }
         let q = query.lowercased()
+        
+        // Filter file system items
         filtered = items.filter { $0.lastPathComponent.lowercased().contains(q) }
+        
+        // Filter directory items (includes groups)
+        filteredDirectoryItems = allDirectoryItems.filter { item in
+            item.name.lowercased().contains(q)
+        }
+        
         table.reloadData()
     }
     private func humanSize(_ bytes: Int64) -> String {
